@@ -656,8 +656,32 @@ async function testConnectionGlobal(){
       box.textContent = `Reached ${s.baseUrl} — HTTP ${resp.status}.\n(This just confirms the server responds; it doesn't check the specific endpoint or method used for updates.)`;
     }
   }catch(err){
-    box.textContent = `Connection test failed: ${err.message}\n\nIf this page was opened as a local file (file://), the browser sends "Origin: null" which most servers reject. Try hosting the file over http(s):// instead, or route through your own token proxy which can set the right CORS headers.`;
+    box.textContent = `Connection test failed: ${err.message}\n\n${explainFetchFailure(s.baseUrl)}`;
   }
+}
+
+/** Fetch failures all surface as the same generic "Failed to fetch" in
+ *  every browser, so we can't know the exact cause from the error object
+ *  alone. This gives the most likely explanation based on what we *can*
+ *  check — the page's own protocol/origin and the target URL — instead of
+ *  always showing the same file:// advice regardless of whether that's
+ *  actually the situation. */
+function explainFetchFailure(targetUrl){
+  const pageIsFile = window.location.protocol === 'file:';
+  const pageIsHttps = window.location.protocol === 'https:';
+  let targetIsHttp = false;
+  try{ targetIsHttp = new URL(targetUrl).protocol === 'http:'; }catch(e){}
+
+  if(pageIsFile){
+    return 'This page was opened as a local file (file://), so the browser sent "Origin: null" — most servers reject that outright. Host this file over http(s):// instead (see the deployment guide), then test again.';
+  }
+  if(pageIsHttps && targetIsHttp){
+    return 'This page is served over https://, but the Base URL is http://. Browsers block that combination ("mixed content"). Change the Base URL to https:// if the target supports it.';
+  }
+  return `This page IS being served over a real origin (${window.location.origin}), so this isn't the file:// issue. "Failed to fetch" here almost always means one of:\n\n` +
+    `1. A genuine CORS block — the target server didn't send permission for ${window.location.origin} to call it. This is common when calling SkySwitch/NetSapiens directly from a browser; it's built for server-to-server calls. A token proxy (making the call from your own server instead of the browser) is the standard fix.\n` +
+    `2. The Base URL is wrong, unreachable, or has a typo.\n\n` +
+    `Open the browser's dev tools (F12 → Console) and re-run this test — the exact error text there (mentioning "CORS", or a DNS/connection error) will tell you which of the two it is.`;
 }
 
 /* =========================================================
