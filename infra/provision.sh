@@ -58,9 +58,16 @@ fi
 log "Application user"
 id -u "$APP_USER" >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin "$APP_USER"
 
+# Must exist before the Postgres step writes db.env into it.
+install -d -m 750 -o root -g "$APP_USER" /etc/portal
+
 log "Postgres"
 # Bind to loopback only. A Postgres reachable from the internet gets found.
-PG_CONF="$(find /etc/postgresql -name postgresql.conf | head -1)"
+PG_CONF="$(find /etc/postgresql -name postgresql.conf 2>/dev/null | head -1)"
+if [[ -z "$PG_CONF" ]]; then
+  echo "could not find postgresql.conf — is postgresql installed?" >&2
+  exit 1
+fi
 sed -i "s/^#\?listen_addresses.*/listen_addresses = 'localhost'/" "$PG_CONF"
 systemctl restart postgresql
 
@@ -68,13 +75,14 @@ sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" |
   DB_PASS="$(openssl rand -base64 24 | tr -d '/+=')"
   sudo -u postgres psql -c "CREATE ROLE ${DB_USER} LOGIN PASSWORD '${DB_PASS}'"
   sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER}"
+  # Create with the final mode first: never let the password touch disk
+  # world-readable, even for the moment before a chmod.
+  install -m 640 -o root -g "$APP_USER" /dev/null /etc/portal/db.env
   echo "DATABASE_URL=postgres://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}" > /etc/portal/db.env
-  chmod 600 /etc/portal/db.env
   echo "Database created. Connection string written to /etc/portal/db.env"
 }
 
 log "Config directory"
-install -d -m 750 -o root -g "$APP_USER" /etc/portal
 if [[ ! -f /etc/portal/portal.env ]]; then
   cp "${APP_DIR}/infra/portal.env.example" /etc/portal/portal.env
   # SESSION_SECRET is generated here so no secret is ever committed.
@@ -117,13 +125,32 @@ cat <<'DONE'
 
 Provisioning complete.
 
-Remaining manual steps:
-  1. Fill in SkySwitch credentials:   sudo nano /etc/portal/portal.env
-  2. Point DNS at this droplet's IP (A record for the portal hostname).
-  3. Set the hostname in /etc/caddy/Caddyfile, then: sudo systemctl reload caddy
-  4. Apply the schema:                 cd /opt/chav/server && npm ci && npm run migrate
-  5. Start it:                         sudo systemctl start portal
-  6. Create your first customer:       node scripts/seed-tenant.js "Name" domain email
+Remaining steps:
 
-Verify with:  curl -s https://<your-host>/readyz
+  1. Fill in the SkySwitch credentials:
+       sudo nano /etc/portal/portal.env     (the five NS_* values)
+
+  2. Install dependencies and apply the schema:
+       cd /opt/chav/server && npm ci && npm run migrate
+
+  3. Start it:
+       sudo systemctl start portal
+       curl -s localhost:3000/readyz        expect {"ok":true,"db":"up"}
+
+  4. Add your first customer:
+       cd /opt/chav/server
+       node scripts/seed-tenant.js \
+         --name "Acme Electric" \
+         --ns-domain acme.yourdomain.com \
+         --hostname acme.portal.dccurrentny.com \
+         --admin owner@acme.com \
+         --color '#2F6FED'
+
+  5. Point an A record for that hostname at this droplet's IP.
+
+No Caddy edit is needed. One site block serves every customer, and the
+certificate is obtained on the first request to a hostname that belongs
+to an active tenant.
+
+Verify once DNS resolves:  curl -s https://<hostname>/readyz
 DONE
