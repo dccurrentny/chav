@@ -111,10 +111,15 @@ authRouter.post('/logout', async (req, res, next) => {
 
 // The SPA calls this on boot to learn who it is and to pick up the CSRF token.
 authRouter.get('/me', requireAuth, (req, res) => {
+  const impersonated = Boolean(req.session.impersonated_by);
   res.json({
     email: req.session.email,
-    role: req.session.role,
+    // A support view is read-only whatever the account's own role says.
+    role: impersonated ? 'member' : req.session.role,
     tenant: { name: req.session.tenant_name, domain: req.session.ns_domain },
     csrfToken: req.session.csrf_secret,
+    impersonation: impersonated
+      ? { by: req.session.staff_email, expiresAt: req.session.expires_at }
+      : null,
   });
 });

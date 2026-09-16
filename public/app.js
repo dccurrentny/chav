@@ -155,6 +155,8 @@
     root.hidden = false;
     var b = state.brand, me = state.me;
 
+    renderSupportBar(me.impersonation);
+
     root.innerHTML =
       '<div class="wrap">' +
         '<div class="topbar">' + logoMarkup(b) +
@@ -168,9 +170,11 @@
 
         '<h1>Where your calls go</h1>' +
         '<p class="lede">These are the forwarding rules on your main line. ' +
-          (me.role === 'admin'
-            ? 'Changes take effect on your phone system straight away.'
-            : 'Your account can view these but not change them — ask an administrator on your account.') +
+          (me.impersonation
+            ? 'You are looking at this account as support, so nothing here can be changed.'
+            : me.role === 'admin'
+              ? 'Changes take effect on your phone system straight away.'
+              : 'Your account can view these but not change them — ask an administrator on your account.') +
         '</p>' +
 
         '<div class="card"><h2>Forwarding rules</h2>' +
@@ -191,10 +195,45 @@
     loadHistory();
   }
 
+  // Shown for the whole life of a support session, with a live countdown so
+  // it is obvious the view expires on its own.
+  function renderSupportBar(imp) {
+    var existing = document.querySelector('.supportbar');
+    if (existing) existing.remove();
+    if (!imp) { document.body.classList.remove('supporting'); return; }
+
+    document.body.classList.add('supporting');
+    var bar = document.createElement('div');
+    bar.className = 'supportbar';
+    bar.setAttribute('role', 'status');
+    bar.innerHTML =
+      '<span class="dot" aria-hidden="true"></span>' +
+      '<span>Support view &mdash; <b>' + h(imp.by) + '</b> is viewing this account as ' +
+        h(state.me.email) + '. <b>Read only.</b></span>' +
+      '<span class="grow"></span>' +
+      '<span class="left" id="sbLeft"></span>' +
+      '<button type="button" id="sbExit">Leave support view</button>';
+    document.body.insertBefore(bar, document.body.firstChild);
+
+    document.getElementById('sbExit').addEventListener('click', onSignOut);
+
+    var until = new Date(imp.expiresAt).getTime();
+    function tick() {
+      var left = Math.max(0, Math.round((until - Date.now()) / 1000));
+      var el = document.getElementById('sbLeft');
+      if (!el) return;
+      if (left === 0) { el.textContent = 'expired'; onSignOut(); return; }
+      el.textContent = Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0') + ' left';
+      setTimeout(tick, 1000);
+    }
+    tick();
+  }
+
   async function onSignOut() {
     try { await api('/api/auth/logout', { method: 'POST' }); } catch (_) { /* sign out anyway */ }
     state.me = null;
     state.csrf = null;
+    renderSupportBar(null);
     renderLogin();
   }
 
@@ -269,6 +308,15 @@
       'subscriber.list':   'Viewed extensions',
       'device.list':       'Viewed phones',
       'callqueue.list':    'Viewed queues',
+      'impersonation.begin':         'Support opened a view of this account',
+      'impersonation.write_refused': 'Support tried to change something (blocked)',
+      'staff.impersonate.start':     'Support opened a view of this account',
+      'staff.tenant.create':         'Account set up',
+      'staff.tenant.update':         'Account details changed',
+      'staff.tenant.status':         'Account status changed',
+      'staff.user.create':           'User added',
+      'staff.user.update':           'User changed',
+      'staff.user.reset_password':   'Password reset',
     };
     var label = map[e.op] || e.op;
     return e.target ? label + ' (' + e.target + ')' : label;

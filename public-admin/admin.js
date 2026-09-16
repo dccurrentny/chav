@@ -346,6 +346,9 @@
               return '<tr><td>' + h(u.email) + '</td><td>' + pill(u.role) + '</td>' +
                 '<td>' + pill(u.status) + '</td><td class="num">' + h(when(u.last_login_at)) + '</td>' +
                 '<td class="actions">' +
+                  (u.status === 'active'
+                    ? '<button class="btn-ghost" data-view="' + h(u.id) + '" data-em="' + h(u.email) + '">View as</button>'
+                    : '') +
                   '<button class="btn-ghost" data-reset="' + h(u.id) + '" data-em="' + h(u.email) + '">Reset</button>' +
                   '<button class="' + (u.status === 'active' ? 'btn-danger' : 'btn-ghost') +
                     '" data-toggle="' + h(u.id) + '" data-to="' +
@@ -376,6 +379,26 @@
             }});
             showSecret('Password for ' + email, t.name, out.password);
           } catch (err) { formError(veil, err); }
+        });
+
+        veil.querySelectorAll('[data-view]').forEach(function (b) {
+          b.addEventListener('click', async function () {
+            if (!confirm('Open ' + t.name + "'s portal as " + b.dataset.em + '?\n\n' +
+                         'You will see exactly what they see. The view is READ ONLY — ' +
+                         'nothing can be changed — and it is recorded in their activity log.')) return;
+            try {
+              var out = await api('/users/' + b.dataset.view + '/impersonate', { method: 'POST' });
+              // The grant lives for 60 seconds, so open it straight away.
+              window.open(out.url, '_blank', 'noopener');
+              closeModal();
+              modal('Support view opened', out.email,
+                '<p class="sub" style="margin-bottom:14px">A read-only view of ' + h(out.tenant) +
+                "'s portal opened in a new tab. It ends by itself after " + h(out.minutes) +
+                ' minutes, and the whole visit is in their activity log.</p>' +
+                '<div class="row-end"><button class="btn" id="mc">Done</button></div>',
+                function (v2) { v2.querySelector('#mc').addEventListener('click', closeModal); });
+            } catch (err) { formError(veil, err); }
+          });
         });
 
         veil.querySelectorAll('[data-reset]').forEach(function (b) {

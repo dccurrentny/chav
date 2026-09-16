@@ -184,3 +184,34 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
   .rule{grid-template-columns:1fr;gap:8px;}
   .whoami{text-align:left;}
 }
+
+
+/* ---------- support view banner ----------
+   An operator viewing as a customer must never be able to forget it, and a
+   customer looking over their shoulder should see it too. Fixed to the top,
+   in a colour that belongs to no tenant's brand. */
+.supportbar{
+  position:fixed;top:0;left:0;right:0;z-index:60;
+  background:#8A2B22;color:#FFF3F1;
+  padding:8px 16px;
+  padding-top:calc(8px + env(safe-area-inset-top, 0px));
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  font-size:13px;font-weight:500;
+  box-shadow:0 2px 12px rgba(0,0,0,.28);
+}
+.supportbar .dot{
+  width:8px;height:8px;border-radius:50%;background:#FF8A7A;flex-shrink:0;
+  animation:sb 2s infinite;
+}
+@keyframes sb{50%{opacity:.35;}}
+.supportbar b{font-weight:700;}
+.supportbar .grow{flex:1 1 auto;}
+.supportbar .left{font-family:var(--mono);font-size:12px;opacity:.9;}
+.supportbar button{
+  background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.4);
+  color:#FFF3F1;border-radius:7px;padding:5px 12px;font-size:12.5px;font-weight:600;
+  font-family:inherit;cursor:pointer;
+}
+.supportbar button:hover{background:rgba(255,255,255,.24);}
+body.supporting{padding-top:52px;}
+@media (max-width:520px){ body.supporting{padding-top:76px;} }

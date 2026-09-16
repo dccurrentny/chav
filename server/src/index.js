@@ -10,6 +10,7 @@ import { nsRouter } from './netsapiens/routes.js';
 import { auditRouter } from './routes/audit.js';
 import { healthRouter } from './routes/health.js';
 import { brandingRouter, internalRouter } from './routes/branding.js';
+import { impersonateRouter } from './routes/impersonate.js';
 import { resolveTenant, requireTenant } from './tenant.js';
 import { adminAuthRouter } from './admin/auth.js';
 import { adminRouter } from './admin/manage.js';
@@ -57,6 +58,9 @@ app.use('/api/admin', requireAdminHost, attachStaffSession, adminRouter);
 // Everything below is scoped to the customer whose hostname was used.
 app.use(resolveTenant);
 app.use(attachSession);
+
+// Redeemed on a customer hostname, so it sits after resolveTenant.
+app.use(impersonateRouter);
 
 app.use('/api', brandingRouter);
 app.use('/api/auth', authRouter);

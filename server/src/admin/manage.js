@@ -6,10 +6,22 @@ import { hashPassword } from '../auth/password.js';
 import { requireStaff, requireOwner, requireStaffCsrf } from './middleware.js';
 import { destroyAllStaffSessions } from './session.js';
 import { _clearTenantCache } from '../tenant.js';
+import { createGrant, impersonationUrl, IMPERSONATION_TTL_MINUTES } from './impersonate.js';
 import * as audit from '../audit.js';
 
 export const adminRouter = express.Router();
 adminRouter.use(requireStaff, requireStaffCsrf);
+
+// Postgres raises on a malformed uuid, which surfaced as a 500 and an error
+// log line for what is really just a bad URL. Reject the shape up front: a
+// nonexistent id and an unparseable one should both read as "no such thing".
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+adminRouter.param('id', (req, res, next, value) => {
+  if (!UUID_RE.test(value)) {
+    return res.status(404).json({ error: 'not_found', message: 'No such record.' });
+  }
+  next();
+});
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -254,6 +266,52 @@ adminRouter.patch('/users/:id', async (req, res, next) => {
     await log(req, { tenantId: rows[0].tenant_id, op: 'staff.user.update',
                      target: rows[0].email, after: parsed.data, result: 'ok' });
     res.json({ ok: true, user: rows[0] });
+  } catch (err) { next(err); }
+});
+
+/* --------------------------------------------------- view as a customer */
+
+// Mints a single-use, 60-second grant. The console opens the returned URL on
+// the CUSTOMER's hostname, which is the only place their session cookie can be
+// set. The resulting session is read-only and clearly marked.
+adminRouter.post('/users/:id/impersonate', async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT u.id, u.email, u.status, t.id AS tenant_id, t.name AS tenant_name,
+              t.hostname, t.status AS tenant_status
+         FROM users u JOIN tenants t ON t.id = u.tenant_id
+        WHERE u.id = $1`,
+      [req.params.id],
+    );
+    const user = rows[0];
+    if (!user) return res.status(404).json({ error: 'not_found', message: 'No such user.' });
+
+    if (user.status !== 'active' || user.tenant_status !== 'active') {
+      return res.status(409).json({
+        error: 'conflict',
+        message: 'That account is disabled or its customer is suspended.',
+      });
+    }
+    if (!user.hostname) {
+      return res.status(409).json({
+        error: 'conflict',
+        message: 'That customer has no portal address yet, so there is nothing to view.',
+      });
+    }
+
+    const token = await createGrant({ userId: user.id, staffId: req.staff.staff_id, ip: req.ip });
+
+    await log(req, {
+      tenantId: user.tenant_id, userId: user.id, op: 'staff.impersonate.start',
+      target: user.email, result: 'ok',
+    });
+
+    res.json({
+      url: impersonationUrl(user.hostname, token),
+      email: user.email,
+      tenant: user.tenant_name,
+      minutes: IMPERSONATION_TTL_MINUTES,
+    });
   } catch (err) { next(err); }
 });
 

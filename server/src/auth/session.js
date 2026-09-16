@@ -27,12 +27,14 @@ export async function createSession(userId, { ip, userAgent }) {
 export async function loadSession(token) {
   if (!token) return null;
   const { rows } = await query(
-    `SELECT s.token_hash, s.csrf_secret, s.expires_at,
+    `SELECT s.token_hash, s.csrf_secret, s.expires_at, s.impersonated_by,
             u.id AS user_id, u.email, u.role, u.status AS user_status,
-            t.id AS tenant_id, t.ns_domain, t.name AS tenant_name, t.status AS tenant_status
+            t.id AS tenant_id, t.ns_domain, t.name AS tenant_name, t.status AS tenant_status,
+            st.email AS staff_email
        FROM sessions s
-       JOIN users   u ON u.id = s.user_id
-       JOIN tenants t ON t.id = u.tenant_id
+       JOIN users   u  ON u.id = s.user_id
+       JOIN tenants t  ON t.id = u.tenant_id
+       LEFT JOIN staff st ON st.id = s.impersonated_by
       WHERE s.token_hash = $1 AND s.expires_at > now()`,
     [hashToken(token)],
   );

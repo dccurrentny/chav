@@ -85,6 +85,24 @@ node scripts/create-operator.js --email you@dccurrentny.com --name "Your Name" -
 Changing it means re-running `provision.sh`, which re-renders the Caddyfile.
 Leave it blank and no console is served at all.
 
+### Viewing a customer's portal
+
+In the console, open a customer's **Users** and press **View as**. A read-only
+copy of their portal opens in a new tab, under a banner naming the operator and
+counting down.
+
+Three things hold, and are worth knowing before you rely on it:
+
+- **It cannot change anything.** Writes are refused server-side, not merely
+  hidden in the UI. If you need to change a customer's routing, do it from the
+  console or talk them through it — never from a support view, because the
+  audit trail would then have to choose between naming them or naming you.
+- **It ends by itself after 30 minutes**, and the link that opens it is
+  single-use and expires in 60 seconds.
+- **The customer can see it.** `impersonation.begin` appears in their own
+  activity list with the operator's email. That is deliberate: someone who
+  looks at an account should leave a mark the account holder can find.
+
 **Operators can see and change every customer.** Keep the list short, and
 disable leavers the same day — disabling kills their live sessions at once.
 

@@ -4,6 +4,7 @@ import rateLimit from 'express-rate-limit';
 import { getOperation, OPERATION_NAMES } from './allowlist.js';
 import { nsRequest, NsError } from './client.js';
 import { requireAuth, requireCsrf } from '../auth/middleware.js';
+import { refuseImpersonatedOperation } from '../admin/impersonate.js';
 import * as audit from '../audit.js';
 import { logger } from '../logger.js';
 
@@ -39,6 +40,13 @@ nsRouter.post('/:operation', writeLimiter, async (req, res, next) => {
   // Default deny: an unlisted operation does not exist as far as the API is concerned.
   if (!op) {
     return res.status(404).json({ error: 'unknown_operation', message: `No such operation: ${name}` });
+  }
+
+  // A support view may read everything and change nothing. This has to key
+  // off the operation, not the HTTP method: reads are POSTs here too, and a
+  // method check would block the very thing support needs to do.
+  if (op.write && s.impersonated_by) {
+    return refuseImpersonatedOperation(req, res, name);
   }
 
   if (op.role === 'admin' && s.role !== 'admin') {

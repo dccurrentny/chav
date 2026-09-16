@@ -78,6 +78,11 @@ https:// {
 	handle /api/* {
 		reverse_proxy 127.0.0.1:3000
 	}
+	# Where a support "view as" link is redeemed. Must reach the app, not the
+	# static file server.
+	handle /__impersonate* {
+		reverse_proxy 127.0.0.1:3000
+	}
 	handle /healthz {
 		reverse_proxy 127.0.0.1:3000
 	}
