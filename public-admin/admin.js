@@ -232,7 +232,9 @@
           '</tbody></table></div>' : '<div class="empty">No customers yet.</div>') +
         '</div>';
 
-      document.getElementById('addT').addEventListener('click', tenantForm);
+      // Wrapped: addEventListener passes the click Event as the first argument,
+      // which tenantForm would read as "the tenant being edited".
+      document.getElementById('addT').addEventListener('click', function () { tenantForm(); });
       panel().querySelectorAll('[data-edit]').forEach(function (b) {
         b.addEventListener('click', function () {
           tenantForm(state.tenants.find(function (t) { return t.id === b.dataset.edit; }));
@@ -272,7 +274,10 @@
   }
 
   function tenantForm(t) {
-    var editing = Boolean(t);
+    // Only a real record counts as an edit. Guards against anything truthy
+    // arriving here by accident — a click Event, most obviously.
+    var editing = Boolean(t && t.id);
+    if (!editing) t = null;
     modal(editing ? 'Edit customer' : 'Add customer',
       editing ? t.name : 'They get their own web address and their own look.',
       '<div class="alert form-err" hidden></div>' +
@@ -526,7 +531,7 @@
                 (s.status === 'active' ? 'Disable' : 'Enable') + '</button>') + '</td></tr>';
           }).join('') + '</tbody></table></div></div>';
 
-      document.getElementById('addS').addEventListener('click', staffForm);
+      document.getElementById('addS').addEventListener('click', function () { staffForm(); });
       panel().querySelectorAll('[data-st]').forEach(function (b) {
         b.addEventListener('click', async function () {
           try {
