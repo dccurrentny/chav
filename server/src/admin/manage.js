@@ -7,6 +7,8 @@ import { requireStaff, requireOwner, requireStaffCsrf } from './middleware.js';
 import { destroyAllStaffSessions } from './session.js';
 import { _clearTenantCache } from '../tenant.js';
 import { createGrant, impersonationUrl, IMPERSONATION_TTL_MINUTES } from './impersonate.js';
+import { describeNsSettings, setSettings, getNsSettings, SETTABLE } from '../settings.js';
+import { testConnection, _resetTokenCache } from '../netsapiens/client.js';
 import * as audit from '../audit.js';
 
 export const adminRouter = express.Router();
@@ -333,6 +335,87 @@ adminRouter.get('/audit', async (req, res, next) => {
       result:    q.data.result    ?? null,
       limit:     q.data.limit,
     }) });
+  } catch (err) { next(err); }
+});
+
+/* ---------------------------------------------------------------- health */
+
+// The console's own health view. Deliberately NOT /readyz: that path is not
+// proxied on the admin hostname, and routing infrastructure checks through an
+// authenticated endpoint keeps the admin host's public surface to the console
+// and nothing else.
+adminRouter.get('/health', async (_req, res, next) => {
+  try {
+    let db = 'up';
+    try { await query('SELECT 1'); } catch { db = 'down'; }
+
+    const ns = await getNsSettings();
+    const missing = Object.entries(ns).filter(([, v]) => !v.set).map(([k]) => k);
+
+    res.json({
+      db,
+      skyswitch: missing.length ? 'not_configured' : 'configured',
+      missing,
+      uptimeSeconds: Math.round(process.uptime()),
+    });
+  } catch (err) { next(err); }
+});
+
+/* -------------------------------------------------------------- settings */
+
+// Presence and origin only. A stored secret is never sent back to a browser,
+// not even to the operator who set it — there is no reason to read one back,
+// and every reason not to put it on the wire again.
+adminRouter.get('/settings/skyswitch', requireOwner, async (_req, res, next) => {
+  try {
+    res.json({ settings: await describeNsSettings() });
+  } catch (err) { next(err); }
+});
+
+adminRouter.put('/settings/skyswitch', requireOwner, async (req, res, next) => {
+  try {
+    const shape = {};
+    for (const key of SETTABLE) {
+      // null or "" clears the stored value and falls back to portal.env.
+      shape[key] = z.string().max(500).nullish();
+    }
+    const parsed = z.object(shape).strict().safeParse(req.body ?? {});
+    if (!parsed.success) return bad(res, parsed.error.issues);
+
+    // Only apply keys actually present, so saving one field does not wipe the rest.
+    const entries = {};
+    for (const [key, value] of Object.entries(parsed.data)) {
+      if (value !== undefined) entries[key] = value;
+    }
+    if (!Object.keys(entries).length) {
+      return res.status(400).json({ error: 'invalid_input', message: 'Nothing to change.' });
+    }
+
+    await setSettings(entries, req.staff.staff_id);
+    // Credentials changed: the cached token belongs to the old ones.
+    _resetTokenCache();
+
+    await log(req, {
+      op: 'staff.settings.skyswitch',
+      // Names only. The values are secrets and do not belong in an audit row.
+      params: { changed: Object.keys(entries) },
+      result: 'ok',
+    });
+    res.json({ ok: true, settings: await describeNsSettings() });
+  } catch (err) { next(err); }
+});
+
+// Actually calls SkySwitch, so an operator finds out here rather than from a
+// customer that the credentials are wrong.
+adminRouter.post('/settings/skyswitch/test', requireOwner, async (req, res, next) => {
+  try {
+    const result = await testConnection();
+    await log(req, {
+      op: 'staff.settings.skyswitch.test',
+      result: result.ok ? 'ok' : 'error',
+      error: result.ok ? null : result.reason,
+    });
+    res.json(result);
   } catch (err) { next(err); }
 });
 

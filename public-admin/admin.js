@@ -148,7 +148,7 @@
     boot.hidden = true; root.hidden = false;
     var me = state.me;
     var tabs = [['overview', 'Overview'], ['tenants', 'Customers'], ['audit', 'Activity']];
-    if (me.role === 'owner') tabs.push(['staff', 'Operators']);
+    if (me.role === 'owner') tabs.push(['staff', 'Operators'], ['system', 'System']);
 
     root.innerHTML =
       '<div class="wrap">' +
@@ -176,7 +176,8 @@
       b.addEventListener('click', function () { state.tab = b.dataset.tab; renderApp(); });
     });
 
-    ({ overview: panelOverview, tenants: panelTenants, audit: panelAudit, staff: panelStaff })[state.tab]();
+    ({ overview: panelOverview, tenants: panelTenants, audit: panelAudit,
+       staff: panelStaff, system: panelSystem })[state.tab]();
   }
 
   function panel() { return document.getElementById('panel'); }
@@ -563,6 +564,128 @@
           } catch (err) { formError(veil, err); }
         });
       });
+  }
+
+  /* ------------------------------------------------------------- system */
+
+  var NS_FIELDS = [
+    ['NS_BASE_URL',      'Portal address',  'https://yourname.skyswitch.com', false],
+    ['NS_CLIENT_ID',     'Client ID',       '',  false],
+    ['NS_CLIENT_SECRET', 'Client secret',   '',  true],
+    ['NS_USERNAME',      'API username',    '',  false],
+    ['NS_PASSWORD',      'API password',    '',  true],
+  ];
+
+  async function panelSystem() {
+    panel().innerHTML = '<div class="empty">Loading…</div>';
+    try {
+      var results = await Promise.all([api('/settings/skyswitch'), api('/health')]);
+      var settings = results[0].settings;
+      var health = results[1];
+
+      var connected = health.skyswitch === 'configured';
+      panel().innerHTML =
+        '<div class="stats">' +
+          stat('Database', health.db === 'up' ? 'Up' : 'Down', health.db !== 'up') +
+          stat('SkySwitch', connected ? 'Connected' : 'Not set up', !connected) +
+          stat('Uptime', formatUptime(health.uptimeSeconds)) +
+        '</div>' +
+
+        '<div class="card">' +
+          '<div class="card-head"><h2>SkySwitch connection</h2></div>' +
+          '<p class="desc">Credentials this server uses to reach the phone system. ' +
+            'Saved changes take effect immediately &mdash; no restart.</p>' +
+          '<div class="alert form-err" hidden></div>' +
+          NS_FIELDS.map(function (f) {
+            var key = f[0], label = f[1], ph = f[2], secret = f[3];
+            var info = settings[key] || {};
+            var origin = info.source === 'console' ? 'saved here'
+                       : info.source === 'file' ? 'from portal.env' : 'not set';
+            return '<div class="field">' +
+              '<label for="s_' + key + '">' + h(label) +
+                ' <span style="opacity:.6;font-weight:400">&mdash; ' + h(origin) + '</span></label>' +
+              '<input id="s_' + key + '" type="' + (secret ? 'password' : 'text') + '" ' +
+                'autocomplete="new-password" placeholder="' +
+                h(secret && info.set ? '•••••••• (leave blank to keep)' : ph) + '" ' +
+                'value="' + h(secret ? '' : (info.value || '')) + '">' +
+            '</div>';
+          }).join('') +
+          '<div class="row-end">' +
+            '<button class="btn-ghost" id="nsTest">Test connection</button>' +
+            '<button class="btn" id="nsSave">Save</button>' +
+          '</div>' +
+          '<div id="nsResult" style="margin-top:12px"></div>' +
+        '</div>' +
+
+        '<div class="card"><h2>Notes</h2>' +
+          '<p class="desc" style="margin:0">Secrets are encrypted before they are stored, and are ' +
+          'never shown again once saved &mdash; leave a password field blank to keep the current one. ' +
+          'Values set here override anything in <code style="font-family:var(--mono)">/etc/portal/portal.env</code>.</p>' +
+        '</div>';
+
+      document.getElementById('nsSave').addEventListener('click', saveNs);
+      document.getElementById('nsTest').addEventListener('click', testNs);
+    } catch (err) {
+      panel().innerHTML = '<div class="alert alert-err">' + h(err.message) + '</div>';
+    }
+  }
+
+  function formatUptime(sec) {
+    if (sec == null) return '—';
+    if (sec < 3600) return Math.round(sec / 60) + ' min';
+    if (sec < 86400) return Math.round(sec / 3600) + ' hr';
+    return Math.round(sec / 86400) + ' days';
+  }
+
+  function nsFormValues() {
+    var body = {};
+    NS_FIELDS.forEach(function (f) {
+      var el = document.getElementById('s_' + f[0]);
+      if (!el) return;
+      var v = el.value.trim();
+      // A blank secret means "keep what is stored", so do not send the key at
+      // all — sending "" would clear it.
+      if (f[3] && v === '') return;
+      body[f[0]] = v;
+    });
+    return body;
+  }
+
+  async function saveNs() {
+    var btn = document.getElementById('nsSave');
+    var out = document.getElementById('nsResult');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      await api('/settings/skyswitch', { method: 'PUT', body: nsFormValues() });
+      out.innerHTML = '<div class="alert alert-ok">Saved. Testing the connection…</div>';
+      await testNs();
+      panelSystem();
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Save';
+      out.innerHTML = '<div class="alert alert-err">' + h(err.message) +
+        (err.details ? ': ' + h(err.details.map(function (d) { return d.field + ' ' + d.problem; }).join('; ')) : '') +
+        '</div>';
+    }
+  }
+
+  async function testNs() {
+    var btn = document.getElementById('nsTest');
+    var out = document.getElementById('nsResult');
+    if (btn) { btn.disabled = true; btn.textContent = 'Testing…'; }
+    try {
+      var r = await api('/settings/skyswitch/test', { method: 'POST' });
+      out.innerHTML = r.ok
+        ? '<div class="alert alert-ok">Connected. SkySwitch accepted these credentials.</div>'
+        : '<div class="alert alert-err">' +
+          (r.reason === 'not_configured'
+            ? 'Not set up yet — still missing: ' + h((r.missing || []).join(', '))
+            : 'SkySwitch refused the connection. ' + h(r.detail || '')) +
+          '</div>';
+    } catch (err) {
+      out.innerHTML = '<div class="alert alert-err">' + h(err.message) + '</div>';
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Test connection'; }
+    }
   }
 
   /* -------------------------------------------------------------- start */

@@ -3,7 +3,8 @@
 // Holds the reseller credentials and the OAuth2 token for the whole process.
 // Nothing here is per-viewer: the browser never sees a NetSapiens token, and
 // the token is refreshed centrally rather than once per customer session.
-import { config, NS_CONFIGURED, missingNsSettings } from '../config.js';
+import { config } from '../config.js';
+import { getNsSettings } from '../settings.js';
 import { logger } from '../logger.js';
 
 const NS_API_PATH = '/ns-api/';
@@ -24,8 +25,17 @@ let inFlight = null;
 // Refresh this far before actual expiry so a request never races the clock.
 const EXPIRY_SKEW_MS = 60_000;
 
-function tokenUrl() {
-  return new URL('/ns-api/oauth2/token/?format=json', config.NS_BASE_URL).toString();
+function tokenUrl(baseUrl) {
+  return new URL('/ns-api/oauth2/token/?format=json', baseUrl).toString();
+}
+
+// Resolved per call rather than read once at startup, so credentials saved in
+// the console take effect without restarting the service.
+async function nsCreds() {
+  const s = await getNsSettings();
+  const values = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.value]));
+  const missing = Object.entries(values).filter(([, v]) => !v).map(([k]) => k);
+  return { values, missing, configured: missing.length === 0 };
 }
 
 // Every transport failure in this module becomes an NsError. Leaking a raw
@@ -40,10 +50,10 @@ function transportError(err, what) {
   );
 }
 
-async function requestToken(body) {
+async function requestToken(body, baseUrl) {
   let res;
   try {
-    res = await fetch(tokenUrl(), {
+    res = await fetch(tokenUrl(baseUrl), {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams(body),
@@ -75,36 +85,37 @@ async function requestToken(body) {
   };
 }
 
-async function refreshToken() {
+async function refreshToken(creds) {
+  const v = creds.values;
   // Prefer the refresh grant; fall back to password when it is gone or stale.
   if (cached?.refreshToken) {
     try {
       return await requestToken({
         grant_type: 'refresh_token',
-        client_id: config.NS_CLIENT_ID,
-        client_secret: config.NS_CLIENT_SECRET,
+        client_id: v.NS_CLIENT_ID,
+        client_secret: v.NS_CLIENT_SECRET,
         refresh_token: cached.refreshToken,
-      });
+      }, v.NS_BASE_URL);
     } catch (err) {
       logger.warn({ err: err.message }, 'refresh grant failed, falling back to password grant');
     }
   }
   return requestToken({
     grant_type: 'password',
-    client_id: config.NS_CLIENT_ID,
-    client_secret: config.NS_CLIENT_SECRET,
-    username: config.NS_USERNAME,
-    password: config.NS_PASSWORD,
-  });
+    client_id: v.NS_CLIENT_ID,
+    client_secret: v.NS_CLIENT_SECRET,
+    username: v.NS_USERNAME,
+    password: v.NS_PASSWORD,
+  }, v.NS_BASE_URL);
 }
 
-async function getToken() {
-  if (!NS_CONFIGURED) {
+async function getToken(creds) {
+  if (!creds.configured) {
     // Distinct from an outage: nothing is wrong with SkySwitch, this server has
     // simply never been given credentials. Not retryable — retrying cannot help.
     throw new NsError('SkySwitch is not connected on this server', {
       notConfigured: true,
-      missing: missingNsSettings,
+      missing: creds.missing,
       retryable: false,
     });
   }
@@ -112,7 +123,7 @@ async function getToken() {
     return cached.accessToken;
   }
   // Single-flight: concurrent callers await the same refresh.
-  inFlight ??= refreshToken()
+  inFlight ??= refreshToken(creds)
     .then((tok) => {
       cached = tok;
       return tok.accessToken;
@@ -132,11 +143,12 @@ async function getToken() {
 export async function nsRequest(object, action, params = {}, { retryOn401 = true } = {}) {
   const started = Date.now();
 
+  const creds = await nsCreds();
   // getToken can itself fail on a SkySwitch outage; requestToken already
   // converts that to an NsError, so callers see one error type either way.
-  const token = await getToken();
+  const token = await getToken(creds);
 
-  const url = new URL(NS_API_PATH, config.NS_BASE_URL);
+  const url = new URL(NS_API_PATH, creds.values.NS_BASE_URL);
   url.searchParams.set('object', object);
   url.searchParams.set('action', action);
   url.searchParams.set('format', 'json');
@@ -190,6 +202,32 @@ export async function nsRequest(object, action, params = {}, { retryOn401 = true
     data = { raw: text };
   }
   return { data, durationMs };
+}
+
+/**
+ * Try the stored credentials and report whether they work.
+ *
+ * Used by the console's "Test connection" button. Drops the cached token first
+ * so it tests what is configured now, not what happened to work earlier.
+ */
+export async function testConnection() {
+  _resetTokenCache();
+  const creds = await nsCreds();
+  if (!creds.configured) {
+    return { ok: false, reason: 'not_configured', missing: creds.missing };
+  }
+  try {
+    await getToken(creds);
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: err.notConfigured ? 'not_configured' : 'auth_failed',
+      // Safe to surface: this is our own upstream, and the text helps an
+      // operator tell a wrong password from an unreachable host.
+      detail: err.message,
+    };
+  }
 }
 
 // Exposed for tests and for operational reset.
