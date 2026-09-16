@@ -8,15 +8,40 @@ import { query } from './db.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
 
-// Keys an operator may set. Anything else is refused — this list is what stops
-// the settings table from becoming a way to reconfigure arbitrary internals.
-export const SETTABLE = Object.freeze([
+// SkySwitch exposes two separate API servers and they are not interchangeable:
+//
+//   pbx   — NetSapiens, /ns-api/. Extensions, answer rules, devices, queues.
+//           This is what the Scheduler Suite has always talked to.
+//   telco — SkySwitch's own reseller API. Numbers, porting, e911, billing.
+//
+// They have different hosts and, in general, different credentials and auth
+// styles, so each operation says which server it belongs to and each server is
+// configured independently.
+export const PBX_KEYS = Object.freeze([
   'NS_BASE_URL', 'NS_CLIENT_ID', 'NS_CLIENT_SECRET', 'NS_USERNAME', 'NS_PASSWORD',
 ]);
 
+// TELCO_AUTH_STYLE is not a credential but decides how the others are used:
+//   bearer — Authorization: Bearer <TELCO_API_KEY>
+//   basic  — Authorization: Basic base64(TELCO_USERNAME:TELCO_PASSWORD)
+//   oauth2 — the same password grant the PBX uses
+// TELCO_TOKEN_PATH is settable because the exact path is not something this
+// code should hard-code from memory: correcting it must not need a deploy.
+export const TELCO_KEYS = Object.freeze([
+  'TELCO_BASE_URL', 'TELCO_AUTH_STYLE', 'TELCO_TOKEN_PATH', 'TELCO_API_KEY',
+  'TELCO_USERNAME', 'TELCO_PASSWORD', 'TELCO_CLIENT_ID', 'TELCO_CLIENT_SECRET',
+]);
+
+// Keys an operator may set. Anything else is refused — this list is what stops
+// the settings table from becoming a way to reconfigure arbitrary internals.
+export const SETTABLE = Object.freeze([...PBX_KEYS, ...TELCO_KEYS]);
+
 // Values that must never be echoed back to a browser, even to an operator.
 // The console shows whether they are set, never what they are.
-export const SECRET_KEYS = Object.freeze(['NS_CLIENT_SECRET', 'NS_PASSWORD']);
+export const SECRET_KEYS = Object.freeze([
+  'NS_CLIENT_SECRET', 'NS_PASSWORD',
+  'TELCO_API_KEY', 'TELCO_PASSWORD', 'TELCO_CLIENT_SECRET',
+]);
 
 // The encryption key is derived from SESSION_SECRET rather than being a second
 // secret to manage. The trade-off is explicit: rotating SESSION_SECRET makes
@@ -89,11 +114,11 @@ export async function getSetting(key) {
   return stored[key] || config[key] || null;
 }
 
-/** All SkySwitch settings, resolved, with where each came from. */
-export async function getNsSettings() {
+/** Resolved settings for one server, with where each value came from. */
+export async function getGroupSettings(keys) {
   const stored = await loadStored();
   const out = {};
-  for (const key of SETTABLE) {
+  for (const key of keys) {
     const value = stored[key] || config[key] || null;
     out[key] = {
       value,
@@ -104,9 +129,19 @@ export async function getNsSettings() {
   return out;
 }
 
+/** The PBX (NetSapiens) connection. */
+export function getNsSettings() {
+  return getGroupSettings(PBX_KEYS);
+}
+
+/** The Telco (SkySwitch reseller) connection. */
+export function getTelcoSettings() {
+  return getGroupSettings(TELCO_KEYS);
+}
+
 /** What the console may see: presence and origin, never a secret's value. */
-export async function describeNsSettings() {
-  const all = await getNsSettings();
+export async function describeSettings(keys) {
+  const all = await getGroupSettings(keys);
   const out = {};
   for (const [key, info] of Object.entries(all)) {
     out[key] = {
@@ -117,6 +152,9 @@ export async function describeNsSettings() {
   }
   return out;
 }
+
+export function describeNsSettings()    { return describeSettings(PBX_KEYS); }
+export function describeTelcoSettings() { return describeSettings(TELCO_KEYS); }
 
 export async function setSettings(entries, staffId) {
   const keys = Object.keys(entries);

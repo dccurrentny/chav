@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import rateLimit from 'express-rate-limit';
 import { getOperation, OPERATION_NAMES } from './allowlist.js';
 import { nsRequest, NsError } from './client.js';
+import { telcoRequest } from '../telco/client.js';
 import { requireAuth, requireCsrf } from '../auth/middleware.js';
 import { refuseImpersonatedOperation } from '../admin/impersonate.js';
 import * as audit from '../audit.js';
@@ -94,7 +95,12 @@ nsRouter.post('/:operation', writeLimiter, async (req, res, next) => {
       before = await safeReadBack(op, params);
     }
 
-    const { data, durationMs } = await nsRequest(op.object, op.action, params);
+    // Dispatch to the server the operation belongs to. The two SkySwitch APIs
+    // speak differently — object/action against the PBX, method/path against
+    // Telco — so this is a fork, not a base-URL swap.
+    const { data, durationMs } = op.server === 'telco'
+      ? await telcoRequest(op.method, op.path, { query: params, body: op.sendBody ? parsed.data : null })
+      : await nsRequest(op.object, op.action, params);
 
     let after = null;
     let verified = null;
@@ -122,8 +128,11 @@ nsRouter.post('/:operation', writeLimiter, async (req, res, next) => {
       if (err.notConfigured) {
         return res.status(503).json({
           error: 'not_configured',
-          message: 'This portal is not connected to the phone system yet. ' +
-                   'Your provider is still setting it up.',
+          message: op.server === 'telco'
+          ? 'This portal is not connected to the phone number service yet. ' +
+            'Your provider is still setting it up.'
+          : 'This portal is not connected to the phone system yet. ' +
+            'Your provider is still setting it up.',
           retryable: false,
         });
       }

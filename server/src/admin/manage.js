@@ -7,8 +7,12 @@ import { requireStaff, requireOwner, requireStaffCsrf } from './middleware.js';
 import { destroyAllStaffSessions } from './session.js';
 import { _clearTenantCache } from '../tenant.js';
 import { createGrant, impersonationUrl, IMPERSONATION_TTL_MINUTES } from './impersonate.js';
-import { describeNsSettings, setSettings, getNsSettings, SETTABLE } from '../settings.js';
+import {
+  describeNsSettings, describeTelcoSettings, setSettings,
+  getNsSettings, getTelcoSettings, PBX_KEYS, TELCO_KEYS,
+} from '../settings.js';
 import { testConnection, _resetTokenCache } from '../netsapiens/client.js';
+import { testTelcoConnection, _resetTelcoToken, AUTH_STYLES } from '../telco/client.js';
 import * as audit from '../audit.js';
 
 export const adminRouter = express.Router();
@@ -349,13 +353,18 @@ adminRouter.get('/health', async (_req, res, next) => {
     let db = 'up';
     try { await query('SELECT 1'); } catch { db = 'down'; }
 
-    const ns = await getNsSettings();
-    const missing = Object.entries(ns).filter(([, v]) => !v.set).map(([k]) => k);
+    const [ns, telco] = await Promise.all([getNsSettings(), getTelcoSettings()]);
+    const nsMissing = Object.entries(ns).filter(([, v]) => !v.set).map(([k]) => k);
+    // Telco requirements depend on the auth style, so "configured" here means
+    // a base URL plus at least one credential — the Test button is the real check.
+    const telcoSet = Object.entries(telco).filter(([, v]) => v.set).map(([k]) => k);
+    const telcoReady = telcoSet.includes('TELCO_BASE_URL') && telcoSet.length > 1;
 
     res.json({
       db,
-      skyswitch: missing.length ? 'not_configured' : 'configured',
-      missing,
+      pbx:   nsMissing.length ? 'not_configured' : 'configured',
+      telco: telcoReady ? 'configured' : 'not_configured',
+      missing: nsMissing,
       uptimeSeconds: Math.round(process.uptime()),
     });
   } catch (err) { next(err); }
@@ -366,16 +375,35 @@ adminRouter.get('/health', async (_req, res, next) => {
 // Presence and origin only. A stored secret is never sent back to a browser,
 // not even to the operator who set it — there is no reason to read one back,
 // and every reason not to put it on the wire again.
-adminRouter.get('/settings/skyswitch', requireOwner, async (_req, res, next) => {
+const SERVERS = {
+  pbx:   { keys: PBX_KEYS,   describe: describeNsSettings,    test: testConnection,      reset: _resetTokenCache },
+  telco: { keys: TELCO_KEYS, describe: describeTelcoSettings, test: testTelcoConnection, reset: _resetTelcoToken },
+};
+
+function serverOr404(req, res) {
+  const s = SERVERS[req.params.server];
+  if (!s) {
+    res.status(404).json({ error: 'not_found', message: 'No such connection.' });
+    return null;
+  }
+  return s;
+}
+
+adminRouter.get('/settings/:server', requireOwner, async (req, res, next) => {
   try {
-    res.json({ settings: await describeNsSettings() });
+    const srv = serverOr404(req, res);
+    if (!srv) return;
+    res.json({ settings: await srv.describe(), authStyles: AUTH_STYLES });
   } catch (err) { next(err); }
 });
 
-adminRouter.put('/settings/skyswitch', requireOwner, async (req, res, next) => {
+adminRouter.put('/settings/:server', requireOwner, async (req, res, next) => {
   try {
+    const srv = serverOr404(req, res);
+    if (!srv) return;
+
     const shape = {};
-    for (const key of SETTABLE) {
+    for (const key of srv.keys) {
       // null or "" clears the stored value and falls back to portal.env.
       shape[key] = z.string().max(500).nullish();
     }
@@ -392,26 +420,28 @@ adminRouter.put('/settings/skyswitch', requireOwner, async (req, res, next) => {
     }
 
     await setSettings(entries, req.staff.staff_id);
-    // Credentials changed: the cached token belongs to the old ones.
-    _resetTokenCache();
+    // Credentials changed: any cached token belongs to the old ones.
+    srv.reset();
 
     await log(req, {
-      op: 'staff.settings.skyswitch',
+      op: `staff.settings.${req.params.server}`,
       // Names only. The values are secrets and do not belong in an audit row.
       params: { changed: Object.keys(entries) },
       result: 'ok',
     });
-    res.json({ ok: true, settings: await describeNsSettings() });
+    res.json({ ok: true, settings: await srv.describe() });
   } catch (err) { next(err); }
 });
 
 // Actually calls SkySwitch, so an operator finds out here rather than from a
 // customer that the credentials are wrong.
-adminRouter.post('/settings/skyswitch/test', requireOwner, async (req, res, next) => {
+adminRouter.post('/settings/:server/test', requireOwner, async (req, res, next) => {
   try {
-    const result = await testConnection();
+    const srv = serverOr404(req, res);
+    if (!srv) return;
+    const result = await srv.test();
     await log(req, {
-      op: 'staff.settings.skyswitch.test',
+      op: `staff.settings.${req.params.server}.test`,
       result: result.ok ? 'ok' : 'error',
       error: result.ok ? null : result.reason,
     });

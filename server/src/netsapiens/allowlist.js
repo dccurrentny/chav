@@ -4,6 +4,15 @@
 // here cannot be invoked by a customer, whatever they put in the request.
 // Default deny: routes.js looks an operation up by name and 404s on a miss.
 //
+// Every entry names the SkySwitch server it belongs to. There are two, and
+// they are not interchangeable:
+//
+//   server: 'pbx'   — NetSapiens, /ns-api/. Extensions, answer rules, devices.
+//   server: 'telco' — SkySwitch's reseller API. Numbers, porting, e911, billing.
+//
+// A 'pbx' entry uses object/action; a 'telco' entry uses method/path. Routing
+// a call to the wrong server is the mistake this field exists to prevent.
+//
 // Rules for every entry:
 //   - `params` validates and STRIPS unknown keys (zod .strict() would throw;
 //     we want a hard error, so .strict() is deliberate).
@@ -21,6 +30,7 @@ const e164ish   = z.string().regex(/^\+?\d{7,15}$/, 'not a valid phone number');
 export const OPERATIONS = {
   // ---------- Answer rules (the routing the Scheduler Suite writes) ----------
   'answerrule.list': {
+    server: 'pbx',
     object: 'answerrule',
     action: 'read',
     write: false,
@@ -29,6 +39,7 @@ export const OPERATIONS = {
   },
 
   'answerrule.update': {
+    server: 'pbx',
     object: 'answerrule',
     action: 'update',
     write: true,
@@ -46,6 +57,7 @@ export const OPERATIONS = {
   },
 
   'answerrule.create': {
+    server: 'pbx',
     object: 'answerrule',
     action: 'create',
     write: true,
@@ -62,6 +74,7 @@ export const OPERATIONS = {
   },
 
   'answerrule.delete': {
+    server: 'pbx',
     object: 'answerrule',
     action: 'delete',
     write: true,
@@ -71,8 +84,26 @@ export const OPERATIONS = {
     describe: (p) => `${p.extension} ${p.time_frame}`,
   },
 
+  // Answer rules are evaluated in order, so reordering changes which one wins.
+  // Listed in the SkySwitch PBX reference alongside the other answerrule calls.
+  'answerrule.reorder': {
+    server: 'pbx',
+    object: 'answerrule',
+    action: 'reorder',
+    write: true,
+    role: 'admin',
+    params: z.object({
+      extension,
+      time_frame: z.string().min(1).max(64),
+      order: z.coerce.number().int().min(0).max(999),
+    }).strict(),
+    readBack: { op: 'answerrule.list', key: 'extension' },
+    describe: (p) => `${p.extension} ${p.time_frame} -> position ${p.order}`,
+  },
+
   // ---------- Time frames ----------
   'timeframe.list': {
+    server: 'pbx',
     object: 'timeframe',
     action: 'read',
     write: false,
@@ -82,6 +113,7 @@ export const OPERATIONS = {
 
   // ---------- Read-only inventory ----------
   'subscriber.list': {
+    server: 'pbx',
     object: 'subscriber',
     action: 'read',
     write: false,
@@ -90,6 +122,7 @@ export const OPERATIONS = {
   },
 
   'device.list': {
+    server: 'pbx',
     object: 'device',
     action: 'read',
     write: false,
@@ -98,6 +131,7 @@ export const OPERATIONS = {
   },
 
   'callqueue.list': {
+    server: 'pbx',
     object: 'callqueue',
     action: 'read',
     write: false,
@@ -105,6 +139,11 @@ export const OPERATIONS = {
     params: z.object({}).strict(),
   },
 };
+
+// Operations for the Telco server go here as they are defined. Each needs a
+// verified method and path from the SkySwitch Telco API reference; none are
+// declared yet because guessing an endpoint that provisions phone numbers or
+// changes billing is not a guess worth making.
 
 export function getOperation(name) {
   // Reject prototype-chain lookups ('constructor', '__proto__', ...).

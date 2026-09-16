@@ -573,66 +573,106 @@
 
   /* ------------------------------------------------------------- system */
 
-  var NS_FIELDS = [
-    ['NS_BASE_URL',      'Portal address',  'https://yourname.skyswitch.com', false],
-    ['NS_CLIENT_ID',     'Client ID',       '',  false],
-    ['NS_CLIENT_SECRET', 'Client secret',   '',  true],
-    ['NS_USERNAME',      'API username',    '',  false],
-    ['NS_PASSWORD',      'API password',    '',  true],
+// SkySwitch runs two separate API servers. They have different hosts and
+// different credentials, so each is configured on its own.
+  var SERVERS = [
+    {
+      id: 'pbx',
+      title: 'PBX connection',
+      blurb: 'The phone system itself — extensions, forwarding, devices, queues. ' +
+             'Base address is your Branded Manager portal (https://portal.yourcompany.com) ' +
+             'or https://&lt;resellerID&gt;-hpbx.dashmanager.com. The username and password ' +
+             'are any Subscriber that can sign in to the Manager portal — that ' +
+             'subscriber&rsquo;s scope decides what this portal can reach, so use one ' +
+             'scoped no wider than it needs.',
+      docs: 'pbx.readme.io',
+      fields: [
+        ['NS_BASE_URL',      'Base address',  'https://portal.yourcompany.com', false],
+        ['NS_CLIENT_ID',     'Client ID',     '',  false],
+        ['NS_CLIENT_SECRET', 'Client secret', '',  true],
+        ['NS_USERNAME',      'API username',  '',  false],
+        ['NS_PASSWORD',      'API password',  '',  true],
+      ],
+    },
+    {
+      id: 'telco',
+      title: 'Telco connection',
+      blurb: 'Phone numbers, porting, e911 and billing. Separate credentials from ' +
+             'the PBX — request them from SkySwitch Control Tower.',
+      docs: 'telco.readme.io',
+      fields: [
+        ['TELCO_BASE_URL',      'Base address',   'https://telco.skyswitch.com', false],
+        ['TELCO_AUTH_STYLE',    'Sign-in method', 'oauth2', false],
+        ['TELCO_TOKEN_PATH',    'Token path',     '/oauth2/token', false],
+        ['TELCO_CLIENT_ID',     'Client ID',      '',  false],
+        ['TELCO_CLIENT_SECRET', 'Client secret',  '',  true],
+        ['TELCO_USERNAME',      'API username',   '',  false],
+        ['TELCO_PASSWORD',      'API password',   '',  true],
+        ['TELCO_API_KEY',       'API key',        'only for the bearer method', true],
+      ],
+    },
   ];
 
   async function panelSystem() {
     panel().innerHTML = '<div class="empty">Loading…</div>';
     try {
-      var results = await Promise.all([api('/settings/skyswitch'), api('/health')]);
-      var settings = results[0].settings;
-      var health = results[1];
+      var fetched = await Promise.all(
+        [api('/health')].concat(SERVERS.map(function (sv) { return api('/settings/' + sv.id); })));
+      var health = fetched[0];
 
-      var connected = health.skyswitch === 'configured';
       panel().innerHTML =
         '<div class="stats">' +
           stat('Database', health.db === 'up' ? 'Up' : 'Down', health.db !== 'up') +
-          stat('SkySwitch', connected ? 'Connected' : 'Not set up', !connected) +
+          stat('PBX',   health.pbx   === 'configured' ? 'Connected' : 'Not set up', health.pbx   !== 'configured') +
+          stat('Telco', health.telco === 'configured' ? 'Connected' : 'Not set up', health.telco !== 'configured') +
           stat('Uptime', formatUptime(health.uptimeSeconds)) +
         '</div>' +
-
-        '<div class="card">' +
-          '<div class="card-head"><h2>SkySwitch connection</h2></div>' +
-          '<p class="desc">Credentials this server uses to reach the phone system. ' +
-            'Saved changes take effect immediately &mdash; no restart.</p>' +
-          '<div class="alert form-err" hidden></div>' +
-          NS_FIELDS.map(function (f) {
-            var key = f[0], label = f[1], ph = f[2], secret = f[3];
-            var info = settings[key] || {};
-            var origin = info.source === 'console' ? 'saved here'
-                       : info.source === 'file' ? 'from portal.env' : 'not set';
-            return '<div class="field">' +
-              '<label for="s_' + key + '">' + h(label) +
-                ' <span style="opacity:.6;font-weight:400">&mdash; ' + h(origin) + '</span></label>' +
-              '<input id="s_' + key + '" type="' + (secret ? 'password' : 'text') + '" ' +
-                'autocomplete="new-password" placeholder="' +
-                h(secret && info.set ? '•••••••• (leave blank to keep)' : ph) + '" ' +
-                'value="' + h(secret ? '' : (info.value || '')) + '">' +
-            '</div>';
-          }).join('') +
-          '<div class="row-end">' +
-            '<button class="btn-ghost" id="nsTest">Test connection</button>' +
-            '<button class="btn" id="nsSave">Save</button>' +
-          '</div>' +
-          '<div id="nsResult" style="margin-top:12px"></div>' +
-        '</div>' +
-
+        SERVERS.map(function (sv, i) {
+          return serverCard(sv, fetched[i + 1].settings);
+        }).join('') +
         '<div class="card"><h2>Notes</h2>' +
           '<p class="desc" style="margin:0">Secrets are encrypted before they are stored, and are ' +
           'never shown again once saved &mdash; leave a password field blank to keep the current one. ' +
-          'Values set here override anything in <code style="font-family:var(--mono)">/etc/portal/portal.env</code>.</p>' +
+          'Values set here override anything in <code style="font-family:var(--mono)">/etc/portal/portal.env</code>, ' +
+          'and take effect immediately without a restart.</p>' +
         '</div>';
 
-      document.getElementById('nsSave').addEventListener('click', saveNs);
-      document.getElementById('nsTest').addEventListener('click', testNs);
+      SERVERS.forEach(function (sv) {
+        document.getElementById('save_' + sv.id).addEventListener('click', function () { saveServer(sv); });
+        document.getElementById('test_' + sv.id).addEventListener('click', function () { testServer(sv); });
+      });
     } catch (err) {
       panel().innerHTML = '<div class="alert alert-err">' + h(err.message) + '</div>';
     }
+  }
+
+  function serverCard(sv, settings) {
+    return '<div class="card">' +
+      '<div class="card-head"><h2>' + h(sv.title) + '</h2>' +
+        '<div class="grow"></div>' +
+        '<span class="host" style="font-size:11px">' + h(sv.docs) + '</span></div>' +
+      '<p class="desc">' + sv.blurb + '</p>' +
+      '<div class="alert form-err" id="err_' + sv.id + '" hidden></div>' +
+      sv.fields.map(function (f) {
+        var key = f[0], label = f[1], ph = f[2], secret = f[3];
+        var info = settings[key] || {};
+        var origin = info.source === 'console' ? 'saved here'
+                   : info.source === 'file' ? 'from portal.env' : 'not set';
+        return '<div class="field">' +
+          '<label for="s_' + key + '">' + h(label) +
+            ' <span style="opacity:.6;font-weight:400">&mdash; ' + h(origin) + '</span></label>' +
+          '<input id="s_' + key + '" type="' + (secret ? 'password' : 'text') + '" ' +
+            'autocomplete="new-password" placeholder="' +
+            h(secret && info.set ? '•••••••• (leave blank to keep)' : ph) + '" ' +
+            'value="' + h(secret ? '' : (info.value || '')) + '">' +
+        '</div>';
+      }).join('') +
+      '<div class="row-end">' +
+        '<button class="btn-ghost" id="test_' + sv.id + '">Test connection</button>' +
+        '<button class="btn" id="save_' + sv.id + '">Save</button>' +
+      '</div>' +
+      '<div id="res_' + sv.id + '" style="margin-top:12px"></div>' +
+    '</div>';
   }
 
   function formatUptime(sec) {
@@ -642,9 +682,9 @@
     return Math.round(sec / 86400) + ' days';
   }
 
-  function nsFormValues() {
+  function formValues(sv) {
     var body = {};
-    NS_FIELDS.forEach(function (f) {
+    sv.fields.forEach(function (f) {
       var el = document.getElementById('s_' + f[0]);
       if (!el) return;
       var v = el.value.trim();
@@ -656,14 +696,14 @@
     return body;
   }
 
-  async function saveNs() {
-    var btn = document.getElementById('nsSave');
-    var out = document.getElementById('nsResult');
+  async function saveServer(sv) {
+    var btn = document.getElementById('save_' + sv.id);
+    var out = document.getElementById('res_' + sv.id);
     btn.disabled = true; btn.textContent = 'Saving…';
     try {
-      await api('/settings/skyswitch', { method: 'PUT', body: nsFormValues() });
+      await api('/settings/' + sv.id, { method: 'PUT', body: formValues(sv) });
       out.innerHTML = '<div class="alert alert-ok">Saved. Testing the connection…</div>';
-      await testNs();
+      await testServer(sv);
       panelSystem();
     } catch (err) {
       btn.disabled = false; btn.textContent = 'Save';
@@ -673,14 +713,14 @@
     }
   }
 
-  async function testNs() {
-    var btn = document.getElementById('nsTest');
-    var out = document.getElementById('nsResult');
+  async function testServer(sv) {
+    var btn = document.getElementById('test_' + sv.id);
+    var out = document.getElementById('res_' + sv.id);
     if (btn) { btn.disabled = true; btn.textContent = 'Testing…'; }
     try {
-      var r = await api('/settings/skyswitch/test', { method: 'POST' });
+      var r = await api('/settings/' + sv.id + '/test', { method: 'POST' });
       out.innerHTML = r.ok
-        ? '<div class="alert alert-ok">Connected. SkySwitch accepted these credentials.</div>'
+        ? '<div class="alert alert-ok">Connected. ' + h(r.detail || 'SkySwitch accepted these credentials.') + '</div>'
         : '<div class="alert alert-err">' +
           (r.reason === 'not_configured'
             ? 'Not set up yet — still missing: ' + h((r.missing || []).join(', '))
