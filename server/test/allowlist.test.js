@@ -41,9 +41,50 @@ test('every write declares a read-back', () => {
 });
 
 test('extension validation rejects injection-shaped input', () => {
+  // The API calls this field `user`; it is the extension the rules belong to.
   const op = getOperation('answerrule.list');
   for (const bad of ['2001; DROP', '../../etc', '<script>', '', 'abcd', '99']) {
-    assert.equal(op.params.safeParse({ extension: bad }).success, false, `accepted ${bad}`);
+    assert.equal(op.params.safeParse({ user: bad }).success, false, `accepted ${bad}`);
   }
-  assert.equal(op.params.safeParse({ extension: '2001' }).success, true);
+  assert.equal(op.params.safeParse({ user: '2001' }).success, true);
+});
+
+test('answerrule.update matches the published field names', () => {
+  // Taken from SkySwitch's OpenAPI definition for object=answerrule&action=update.
+  // These were wrong before — extension/forward_destination/forward_enable —
+  // which would have failed every routing change a customer made.
+  const op = getOperation('answerrule.update');
+  const valid = {
+    user: '2001', time_frame: 'Business Hours', order: 0, enable: 'yes',
+    for_parameters: '2999', for_control: 'e',
+  };
+  assert.equal(op.params.safeParse(valid).success, true, 'the documented shape was rejected');
+
+  // The old names must not be silently accepted.
+  for (const stale of ['extension', 'forward_destination', 'forward_enable']) {
+    const res = op.params.safeParse({ ...valid, [stale]: 'x' });
+    assert.equal(res.success, false, `${stale} is still accepted`);
+  }
+});
+
+test('answerrule.update requires the fields the API requires', () => {
+  const op = getOperation('answerrule.update');
+  const full = { user: '2001', time_frame: '*', order: 0, enable: 'yes' };
+  for (const required of ['user', 'time_frame', 'order', 'enable']) {
+    const partial = { ...full };
+    delete partial[required];
+    assert.equal(op.params.safeParse(partial).success, false,
+      `${required} is documented as required but was optional`);
+  }
+});
+
+test('feature toggles only accept the documented "e" and "d"', () => {
+  const op = getOperation('answerrule.update');
+  const base = { user: '2001', time_frame: '*', order: 0, enable: 'yes', for_parameters: '2999' };
+  assert.equal(op.params.safeParse({ ...base, for_control: 'e' }).success, true);
+  assert.equal(op.params.safeParse({ ...base, for_control: 'd' }).success, true);
+  for (const bad of ['yes', 'no', 'true', 'enable', '1']) {
+    assert.equal(op.params.safeParse({ ...base, for_control: bad }).success, false,
+      `for_control accepted ${bad}`);
+  }
 });

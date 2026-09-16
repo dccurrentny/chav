@@ -8,6 +8,10 @@
 
   var state = { brand: null, me: null, csrf: null, rules: [], history: [] };
 
+  // The extension whose rules this portal shows. Per-customer once the console
+  // can set it; until then it is the main line every tenant is set up with.
+  var EXTENSION = '2001';
+
   var boot = document.getElementById('boot');
   var root = document.getElementById('root');
 
@@ -240,7 +244,8 @@
   async function loadRules() {
     var host = document.getElementById('rules');
     try {
-      var out = await api('/api/ns/answerrule.list', { method: 'POST', body: { extension: '2001' } });
+      // `user` is the API's name for the extension the rules belong to.
+      var out = await api('/api/ns/answerrule.list', { method: 'POST', body: { user: EXTENSION } });
       var rules = normaliseRules(out.data);
       state.rules = rules;
       host.innerHTML = rules.length ? rules.map(ruleRow).join('') :
@@ -257,16 +262,41 @@
   function normaliseRules(data) {
     if (!data) return [];
     var list = Array.isArray(data) ? data : (Array.isArray(data.answerrule) ? data.answerrule : [data]);
-    return list.filter(function (r) { return r && (r.time_frame || r.timeFrame); });
+    return list.filter(function (r) { return r && r.time_frame; });
+  }
+
+  // A rule can forward in several ways at once. Show the one that is actually
+  // switched on, in the order a dispatcher would care about.
+  function activeDestination(r) {
+    var modes = [
+      ['for', 'Forwarded'],
+      ['sim', 'Rings at'],
+      ['fna', 'If no answer'],
+      ['fbu', 'If busy'],
+      ['fnr', 'If unreachable'],
+      ['foa', 'If on a call'],
+    ];
+    for (var i = 0; i < modes.length; i++) {
+      var key = modes[i][0];
+      if (String(r[key + '_control'] || '').toLowerCase() === 'e' && r[key + '_parameters']) {
+        return { label: modes[i][1], to: r[key + '_parameters'] };
+      }
+    }
+    if (String(r.dnd_control || '').toLowerCase() === 'e') {
+      return { label: 'Do not disturb', to: 'calls are not put through' };
+    }
+    return null;
   }
 
   function ruleRow(r) {
-    var when = r.time_frame || r.timeFrame || 'Always';
-    var to = r.forward_destination || r.forwardDestination || '—';
-    var on = String(r.forward_enable || r.forwardEnable || 'yes').toLowerCase() === 'yes';
+    var when = r.time_frame || 'Always';
+    var active = activeDestination(r);
+    var to = active ? active.to : 'no forwarding set';
+    var lead = active ? active.label : 'Calls go to';
+    var on = String(r.enable || 'yes').toLowerCase() === 'yes';
     return '<div class="rule"><div>' +
              '<div class="rule-when">' + h(when) + '</div>' +
-             '<div class="rule-to num">Calls go to ' + h(to) + '</div>' +
+             '<div class="rule-to num">' + h(lead) + ' ' + h(to) + '</div>' +
            '</div>' +
            '<span class="badge' + (on ? '' : ' off') + '">' + (on ? 'Active' : 'Off') + '</span>' +
            '</div>';
