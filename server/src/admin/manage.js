@@ -12,7 +12,7 @@ import {
   getNsSettings, getTelcoSettings, PBX_KEYS, TELCO_KEYS,
 } from '../settings.js';
 import { testConnection, _resetTokenCache } from '../netsapiens/client.js';
-import { testTelcoConnection, _resetTelcoToken, AUTH_STYLES } from '../telco/client.js';
+import { testTelcoConnection, _resetTelcoToken, AUTH_STYLES, TELCO_SCOPES } from '../telco/client.js';
 import * as audit from '../audit.js';
 
 export const adminRouter = express.Router();
@@ -393,7 +393,11 @@ adminRouter.get('/settings/:server', requireOwner, async (req, res, next) => {
   try {
     const srv = serverOr404(req, res);
     if (!srv) return;
-    res.json({ settings: await srv.describe(), authStyles: AUTH_STYLES });
+    res.json({
+      settings: await srv.describe(),
+      authStyles: AUTH_STYLES,
+      telcoScopes: TELCO_SCOPES,
+    });
   } catch (err) { next(err); }
 });
 

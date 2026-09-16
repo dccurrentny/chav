@@ -26,7 +26,11 @@ let inFlight = null;
 const EXPIRY_SKEW_MS = 60_000;
 
 function tokenUrl(baseUrl) {
-  return new URL('/ns-api/oauth2/token/?format=json', baseUrl).toString();
+  return new URL('/ns-api/oauth2/token/', baseUrl).toString();
+}
+
+function inspectUrl(baseUrl) {
+  return new URL('/ns-api/oauth2/read?format=json', baseUrl).toString();
 }
 
 // Resolved per call rather than read once at startup, so credentials saved in
@@ -50,15 +54,26 @@ function transportError(err, what) {
   );
 }
 
-async function requestToken(body, baseUrl) {
+async function requestToken(params, baseUrl, { method = 'POST' } = {}) {
   let res;
   try {
-    res = await fetch(tokenUrl(baseUrl), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(body),
-      signal: AbortSignal.timeout(config.NS_TIMEOUT_MS),
-    });
+    if (method === 'GET') {
+      // The refresh grant is documented as a GET carrying its parameters in
+      // the query string, not as a form POST like the password grant.
+      const url = new URL(tokenUrl(baseUrl));
+      for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+      res = await fetch(url, {
+        method: 'GET',
+        signal: AbortSignal.timeout(config.NS_TIMEOUT_MS),
+      });
+    } else {
+      res = await fetch(tokenUrl(baseUrl), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(params),
+        signal: AbortSignal.timeout(config.NS_TIMEOUT_MS),
+      });
+    }
   } catch (err) {
     throw transportError(err, 'token endpoint');
   }
@@ -74,6 +89,18 @@ async function requestToken(body, baseUrl) {
   }
 
   const json = await res.json().catch(() => null);
+
+  // Checked before access_token, because an MFA challenge carries one: it is an
+  // intermediate token that only completes the mfa grant. Accepting it would
+  // look like success and then fail every subsequent call with a 401.
+  if (json?.mfa === 'mfa_required') {
+    throw new NsError(
+      'That SkySwitch subscriber has multi-factor authentication enabled. ' +
+      'A server cannot answer an MFA prompt — use a dedicated API subscriber without MFA.',
+      { notConfigured: true, retryable: false, mfaRequired: true },
+    );
+  }
+
   if (!json?.access_token) throw new NsError('token response had no access_token');
 
   // NetSapiens reports expires_in in seconds; default to 1h when absent.
@@ -95,7 +122,7 @@ async function refreshToken(creds) {
         client_id: v.NS_CLIENT_ID,
         client_secret: v.NS_CLIENT_SECRET,
         refresh_token: cached.refreshToken,
-      }, v.NS_BASE_URL);
+      }, v.NS_BASE_URL, { method: 'GET' });
     } catch (err) {
       logger.warn({ err: err.message }, 'refresh grant failed, falling back to password grant');
     }
@@ -217,8 +244,30 @@ export async function testConnection() {
     return { ok: false, reason: 'not_configured', missing: creds.missing };
   }
   try {
-    await getToken(creds);
-    return { ok: true };
+    const token = await getToken(creds);
+
+    // Ask SkySwitch what this token can reach. Far more useful than "it
+    // worked": the scope is what decides the blast radius of these credentials.
+    let info = null;
+    try {
+      const res = await fetch(inspectUrl(creds.values.NS_BASE_URL), {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(config.NS_TIMEOUT_MS),
+      });
+      if (res.ok) info = await res.json().catch(() => null);
+    } catch {
+      // Inspection is a bonus; a token we already hold means the credentials work.
+    }
+
+    return {
+      ok: true,
+      scope: info?.scope ?? null,
+      domain: info?.domain ?? null,
+      territory: info?.territory ?? null,
+      detail: info?.scope
+        ? `Signed in as ${info.uid ?? 'the API subscriber'} with ${info.scope} scope.`
+        : 'SkySwitch accepted these credentials.',
+    };
   } catch (err) {
     return {
       ok: false,

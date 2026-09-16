@@ -15,6 +15,14 @@ import { NsError } from '../netsapiens/client.js';
 
 export const AUTH_STYLES = Object.freeze(['bearer', 'basic', 'oauth2']);
 
+// Documented on developers.skyswitch.com. Listed here so the console can offer
+// them rather than expecting an operator to remember the spellings.
+export const TELCO_SCOPES = Object.freeze([
+  'account', 'user', 'catalog', 'phone_number', 'routing', 'e911', 'billing',
+  'lnp', 'back_office', 'carrier', 'pbx', 'entitlement', 'uc_config',
+  'messaging', 'report', 'branding', 'port-in', 'ten_dlc', 'tollfree_a2p',
+]);
+
 let cachedToken = null;    // oauth2 only
 let inFlight = null;
 
@@ -69,6 +77,10 @@ async function oauthToken(c) {
           client_secret: v.TELCO_CLIENT_SECRET,
           username: v.TELCO_USERNAME,
           password: v.TELCO_PASSWORD,
+          // Ask only for what this portal does. The Telco API scopes include
+          // billing, back_office and lnp; a token that never requests them
+          // cannot be turned against them.
+          ...(v.TELCO_SCOPES ? { scope: v.TELCO_SCOPES } : {}),
         }),
         signal: AbortSignal.timeout(config.NS_TIMEOUT_MS),
       });

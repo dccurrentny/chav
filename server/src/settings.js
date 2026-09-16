@@ -27,9 +27,13 @@ export const PBX_KEYS = Object.freeze([
 //   oauth2 — the same password grant the PBX uses
 // TELCO_TOKEN_PATH is settable because the exact path is not something this
 // code should hard-code from memory: correcting it must not need a deploy.
+// TELCO_SCOPES is a least-privilege control, not a credential: the Telco API
+// lets the client ask for exactly the scopes it needs, and a token issued
+// without `billing` or `back_office` cannot touch them however it is misused.
 export const TELCO_KEYS = Object.freeze([
-  'TELCO_BASE_URL', 'TELCO_AUTH_STYLE', 'TELCO_TOKEN_PATH', 'TELCO_API_KEY',
-  'TELCO_USERNAME', 'TELCO_PASSWORD', 'TELCO_CLIENT_ID', 'TELCO_CLIENT_SECRET',
+  'TELCO_BASE_URL', 'TELCO_AUTH_STYLE', 'TELCO_TOKEN_PATH', 'TELCO_SCOPES',
+  'TELCO_API_KEY', 'TELCO_USERNAME', 'TELCO_PASSWORD',
+  'TELCO_CLIENT_ID', 'TELCO_CLIENT_SECRET',
 ]);
 
 // Keys an operator may set. Anything else is refused — this list is what stops

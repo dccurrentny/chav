@@ -598,12 +598,15 @@
       id: 'telco',
       title: 'Telco connection',
       blurb: 'Phone numbers, porting, e911 and billing. Separate credentials from ' +
-             'the PBX — request them from SkySwitch Control Tower.',
-      docs: 'telco.readme.io',
+             'the PBX — request a client ID and secret from SkySwitch Control Tower. ' +
+             'Scopes are requested by us, so list only what this portal needs: a token ' +
+             'that never asks for billing or back_office cannot reach them.',
+      docs: 'developers.skyswitch.com',
       fields: [
-        ['TELCO_BASE_URL',      'Base address',   'https://telco.skyswitch.com', false],
+        ['TELCO_BASE_URL',      'Base address',   'https://api.skyswitch.com', false],
         ['TELCO_AUTH_STYLE',    'Sign-in method', 'oauth2', false],
-        ['TELCO_TOKEN_PATH',    'Token path',     '/oauth2/token', false],
+        ['TELCO_TOKEN_PATH',    'Token path',     '/oauth/token', false],
+        ['TELCO_SCOPES',        'Scopes',         'phone_number routing e911', false],
         ['TELCO_CLIENT_ID',     'Client ID',      '',  false],
         ['TELCO_CLIENT_SECRET', 'Client secret',  '',  true],
         ['TELCO_USERNAME',      'API username',   '',  false],
