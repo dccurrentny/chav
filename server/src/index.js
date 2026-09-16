@@ -1,0 +1,89 @@
+import express from 'express';
+import helmet from 'helmet';
+import pinoHttp from 'pino-http';
+import { config, isProd } from './config.js';
+import { logger } from './logger.js';
+import { pool } from './db.js';
+import { attachSession } from './auth/middleware.js';
+import { authRouter } from './auth/routes.js';
+import { nsRouter } from './netsapiens/routes.js';
+import { auditRouter } from './routes/audit.js';
+import { healthRouter } from './routes/health.js';
+import { purgeExpired } from './auth/session.js';
+
+const app = express();
+
+// Caddy terminates TLS and sets X-Forwarded-*. Trusting exactly one hop keeps
+// req.ip honest for rate limiting; trusting all hops would let a client spoof it.
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+      imgSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'"],
+      frameAncestors: ["'none'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+    },
+  },
+  hsts: isProd ? { maxAge: 31536000, includeSubDomains: true } : false,
+}));
+
+app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/healthz' } }));
+app.use(express.json({ limit: '64kb' }));
+app.use(attachSession);
+
+app.use(healthRouter);
+app.use('/api/auth', authRouter);
+app.use('/api/ns', nsRouter);
+app.use('/api/audit', auditRouter);
+
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'not_found', message: 'No such endpoint.' });
+});
+
+// Terminal error handler. Never leaks a stack trace or an upstream detail to
+// the browser — the log has it, the customer gets a reference to quote.
+app.use((err, req, res, _next) => {
+  const ref = Math.random().toString(36).slice(2, 10);
+  req.log?.error({ err, ref }, 'unhandled error');
+  res.status(500).json({
+    error: 'server_error',
+    message: 'Something went wrong on our side. Nothing was changed.',
+    reference: ref,
+  });
+});
+
+const server = app.listen(config.PORT, '127.0.0.1', () => {
+  logger.info({ port: config.PORT, env: config.NODE_ENV }, 'portal api listening');
+});
+
+// Expired sessions accumulate forever otherwise.
+const purgeTimer = setInterval(() => {
+  purgeExpired()
+    .then((n) => n > 0 && logger.info({ purged: n }, 'purged expired sessions'))
+    .catch((err) => logger.error({ err }, 'session purge failed'));
+}, 60 * 60 * 1000);
+purgeTimer.unref();
+
+// Graceful shutdown so a deploy does not cut a customer off mid-write.
+let shuttingDown = false;
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ signal }, 'shutting down');
+    server.close(async () => {
+      await pool.end().catch(() => {});
+      process.exit(0);
+    });
+    // Don't hang forever on a stuck connection.
+    setTimeout(() => process.exit(1), 10_000).unref();
+  });
+}

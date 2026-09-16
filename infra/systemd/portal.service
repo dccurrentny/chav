@@ -1,0 +1,46 @@
+[Unit]
+Description=DC Current customer portal API
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=portal
+Group=portal
+WorkingDirectory=/opt/chav/server
+
+# Secrets live in root-owned files readable by the portal group, never in the unit.
+EnvironmentFile=/etc/portal/db.env
+EnvironmentFile=/etc/portal/portal.env
+
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=3
+
+# If it crash-loops, stop and leave it down rather than hammering SkySwitch.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=portal
+
+# --- Hardening. The process needs nothing but loopback and its own directory. ---
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+ReadWritePaths=/opt/chav/server
+
+[Install]
+WantedBy=multi-user.target

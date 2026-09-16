@@ -1,0 +1,8 @@
+[Unit]
+Description=Nightly portal database backup
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/portal-backup
+EnvironmentFile=-/etc/portal/backup.env

@@ -1,0 +1,35 @@
+# Caddy obtains and renews the TLS certificate automatically.
+# Change this hostname to your real one, then: systemctl reload caddy
+portal.dccurrentny.com {
+	encode gzip zstd
+
+	# Static frontend.
+	root * /opt/chav/public
+	file_server
+
+	# API goes to the Node process, which listens on loopback only.
+	handle /api/* {
+		reverse_proxy 127.0.0.1:3000
+	}
+	handle /healthz {
+		reverse_proxy 127.0.0.1:3000
+	}
+	handle /readyz {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options    "nosniff"
+		Referrer-Policy           "strict-origin-when-cross-origin"
+		X-Frame-Options           "DENY"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/portal.log {
+			roll_size 20mb
+			roll_keep 10
+		}
+	}
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the portal database backup nightly
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+# Catch up after the droplet was off at the scheduled time.
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target
