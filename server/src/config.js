@@ -23,6 +23,11 @@ const schema = z.object({
   NS_TIMEOUT_MS:    z.coerce.number().int().positive().default(15000),
 
   SESSION_TTL_HOURS: z.coerce.number().int().positive().default(12),
+
+  // The staff console answers on exactly this hostname and nowhere else.
+  // Leave it unset and the console is simply not served — a safe default for
+  // an installation that does not want one exposed.
+  ADMIN_HOSTNAME: z.string().min(1).optional(),
   LOG_LEVEL:         z.enum(['fatal','error','warn','info','debug','trace']).default('info'),
 });
 

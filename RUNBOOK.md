@@ -67,6 +67,27 @@ Prints a generated password **once**. Send it over a channel you trust, then
 delete your copy. It is not recoverable — to reissue, run again with a
 different `--admin` and disable the old user.
 
+### The staff console
+
+Day-to-day customer management happens at `https://<ADMIN_HOSTNAME>` — add and
+edit customers, manage their users, reset passwords, suspend accounts, and read
+activity across every customer. The `psql` and CLI recipes below remain as the
+fallback for when the console itself is the thing that is broken.
+
+Create the first operator (once, at setup — after that, add them in the console):
+
+```bash
+cd /opt/chav/server
+node scripts/create-operator.js --email you@dccurrentny.com --name "Your Name" --owner
+```
+
+`ADMIN_HOSTNAME` in `/etc/portal/portal.env` decides where the console answers.
+Changing it means re-running `provision.sh`, which re-renders the Caddyfile.
+Leave it blank and no console is served at all.
+
+**Operators can see and change every customer.** Keep the list short, and
+disable leavers the same day — disabling kills their live sessions at once.
+
 ### Rebrand a customer
 
 ```sql
@@ -260,10 +281,16 @@ Changing any of these needs a deliberate review, not a quick edit:
 5. **Secrets live only in `/etc/portal/*.env`**, never in the repo, the systemd
    unit, or a log line. `server/src/logger.js` redacts tokens and passwords.
 6. **Writes require the `admin` role and a CSRF header.** Reads do not.
-7. **The hostname decides the tenant, and login is scoped to it.** A user is
+7. **Staff are not users.** Operators live in their own table with their own
+   sessions and their own cookie. Never give a `users` row cross-tenant power:
+   the tenant boundary depends on every user having exactly one tenant.
+8. **The console answers on `ADMIN_HOSTNAME` and nowhere else.** The API 404s
+   admin endpoints on any other host and Caddy serves the admin bundle only
+   from that block. Both checks matter — keep both.
+9. **The hostname decides the tenant, and login is scoped to it.** A user is
    looked up by email *and* tenant, so one customer's credentials do nothing on
    another's portal. `requireAuth` additionally refuses a session whose tenant
    does not match the hostname — defence in depth behind host-only cookies.
-8. **`/internal/tls-check` must stay unreachable from outside.** Caddy calls it
+10. **`/internal/tls-check` must stay unreachable from outside.** Caddy calls it
    on loopback; the public site block returns 404 for `/internal/*`. Exposing it
    would let anyone enumerate customer hostnames.

@@ -25,7 +25,7 @@ fi
 log "Base packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq curl ca-certificates gnupg git ufw postgresql postgresql-contrib \
+apt-get install -y -qq curl ca-certificates gnupg git ufw gettext-base postgresql postgresql-contrib \
   unattended-upgrades debian-goodies apt-listchanges
 
 log "Unattended security upgrades"
@@ -103,7 +103,26 @@ systemctl daemon-reload
 systemctl enable portal
 
 log "Caddy site"
-cp "${APP_DIR}/infra/Caddyfile" /etc/caddy/Caddyfile
+# The Caddyfile is rendered from the template so ADMIN_HOSTNAME is configured
+# in exactly one place: /etc/portal/portal.env.
+# shellcheck source=/dev/null
+ADMIN_HOSTNAME="$(. /etc/portal/portal.env 2>/dev/null; printf '%s' "${ADMIN_HOSTNAME:-}")"
+if [[ -z "$ADMIN_HOSTNAME" ]]; then
+  echo "!! ADMIN_HOSTNAME is not set in /etc/portal/portal.env."
+  echo "   The staff console will not be served until you set it and re-run this script."
+  # A block with no hostname would be a syntax error, so drop it entirely.
+  awk '/^\$\{ADMIN_HOSTNAME\} \{/{skip=1} skip&&/^\}/{skip=0;next} !skip' \
+    "${APP_DIR}/infra/Caddyfile.template" > /etc/caddy/Caddyfile
+else
+  # envsubst takes the literal name as its filter list, so the single quotes
+  # are correct here — substituting only this one variable keeps Caddy's own
+  # {$...} and {path} placeholders untouched.
+  # shellcheck disable=SC2016
+  ADMIN_HOSTNAME="$ADMIN_HOSTNAME" envsubst '${ADMIN_HOSTNAME}' \
+    < "${APP_DIR}/infra/Caddyfile.template" > /etc/caddy/Caddyfile
+  echo "staff console will answer on https://${ADMIN_HOSTNAME}"
+fi
+caddy validate --config /etc/caddy/Caddyfile 2>/dev/null || echo "!! caddy validate reported a problem — check /etc/caddy/Caddyfile"
 systemctl reload caddy || systemctl restart caddy
 
 log "Firewall"
@@ -147,6 +166,10 @@ Remaining steps:
          --color '#2F6FED'
 
   5. Point an A record for that hostname at this droplet's IP.
+
+  6. Create your first staff operator for the admin console:
+       node scripts/create-operator.js --email you@dccurrentny.com --name "Your Name" --owner
+     Then sign in at https://<ADMIN_HOSTNAME> and manage everything from there.
 
 No Caddy edit is needed. One site block serves every customer, and the
 certificate is obtained on the first request to a hostname that belongs
