@@ -103,6 +103,8 @@ systemctl daemon-reload
 systemctl enable portal
 
 log "Caddy site"
+# Caddy refuses to start if a log directory in the config does not exist.
+install -d -o caddy -g caddy /var/log/caddy 2>/dev/null || install -d /var/log/caddy
 # The Caddyfile is rendered from the template so ADMIN_HOSTNAME is configured
 # in exactly one place: /etc/portal/portal.env.
 # shellcheck source=/dev/null
@@ -122,8 +124,14 @@ else
     < "${APP_DIR}/infra/Caddyfile.template" > /etc/caddy/Caddyfile
   echo "staff console will answer on https://${ADMIN_HOSTNAME}"
 fi
-caddy validate --config /etc/caddy/Caddyfile 2>/dev/null || echo "!! caddy validate reported a problem — check /etc/caddy/Caddyfile"
-systemctl reload caddy || systemctl restart caddy
+if ! caddy validate --config /etc/caddy/Caddyfile 2>&1; then
+  echo
+  echo "!! The Caddy config above did not validate, so Caddy will not start."
+  echo "   Fix /etc/caddy/Caddyfile, then: sudo systemctl restart caddy"
+  echo "   Everything else on this box is provisioned; re-running this script is safe."
+else
+  systemctl reload caddy || systemctl restart caddy
+fi
 
 log "Firewall"
 ufw allow OpenSSH
