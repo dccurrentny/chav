@@ -109,8 +109,15 @@ systemctl daemon-reload
 systemctl enable portal
 
 log "Caddy site"
-# Caddy refuses to start if a log directory in the config does not exist.
-install -d -o caddy -g caddy /var/log/caddy 2>/dev/null || install -d /var/log/caddy
+# Caddy refuses to start if it cannot open its log files. `install -d` only
+# applies ownership when it CREATES the directory, so an existing root-owned
+# /var/log/caddy stayed unwritable and Caddy died with "permission denied".
+# Set it every run instead.
+install -d /var/log/caddy
+if id caddy >/dev/null 2>&1; then
+  chown -R caddy:caddy /var/log/caddy
+  chmod 750 /var/log/caddy
+fi
 # The Caddyfile is rendered from the template so ADMIN_HOSTNAME is configured
 # in exactly one place: /etc/portal/portal.env.
 # shellcheck source=/dev/null
