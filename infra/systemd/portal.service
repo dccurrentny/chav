@@ -40,7 +40,8 @@ RestrictNamespaces=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=false
-ReadWritePaths=/opt/chav/server
+# No ReadWritePaths: ProtectSystem=strict leaves the whole filesystem read-only
+# to this unit, and the app writes nothing to disk — all state is in Postgres.
 
 [Install]
 WantedBy=multi-user.target

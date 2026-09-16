@@ -94,8 +94,14 @@ if [[ ! -f /etc/portal/portal.env ]]; then
 fi
 
 log "Application directory"
-install -d -o "$APP_USER" -g "$APP_USER" "$APP_DIR"
-chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+# Deployed code stays root-owned and world-readable. The service only needs to
+# READ it, and handing the checkout to the service account breaks `git pull`
+# for whoever administers the box — git refuses to operate on a repository
+# owned by someone else. It would break the CI deploy for the same reason.
+install -d -o root -g root -m 755 "$APP_DIR"
+# Recursive, so a checkout left owned by the service account by an earlier
+# version of this script is repaired on the next run.
+chown -R root:root "$APP_DIR"
 
 log "systemd unit"
 cp "${APP_DIR}/infra/systemd/portal.service" /etc/systemd/system/portal.service
