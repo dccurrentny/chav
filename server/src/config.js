@@ -3,6 +3,10 @@
 // starting up and failing later on a live customer request.
 import { z } from 'zod';
 
+const blankAsUnset = (v) => (v === '' ? undefined : v);
+const optionalText = () => z.preprocess(blankAsUnset, z.string().min(1).optional());
+const optionalUrl  = () => z.preprocess(blankAsUnset, z.string().url().optional());
+
 const schema = z.object({
   NODE_ENV:    z.enum(['development', 'production', 'test']).default('production'),
   PORT:        z.coerce.number().int().positive().default(3000),
@@ -15,11 +19,20 @@ const schema = z.object({
   SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
 
   // --- SkySwitch / NetSapiens ---
-  NS_BASE_URL:      z.string().url(),
-  NS_CLIENT_ID:     z.string().min(1),
-  NS_CLIENT_SECRET: z.string().min(1),
-  NS_USERNAME:      z.string().min(1),
-  NS_PASSWORD:      z.string().min(1),
+  //
+  // Optional. The staff console, customer sign-in and branding do not touch
+  // SkySwitch at all, so an installation without these credentials still comes
+  // up and is usable — only the routing screens report that SkySwitch is not
+  // configured yet. Requiring them to boot meant a box could not be stood up
+  // until the SkySwitch account existed, which is the wrong order to work in.
+  //
+  // An unset variable in an EnvironmentFile arrives as an empty string rather
+  // than absent, so treat "" as not set.
+  NS_BASE_URL:      optionalUrl(),
+  NS_CLIENT_ID:     optionalText(),
+  NS_CLIENT_SECRET: optionalText(),
+  NS_USERNAME:      optionalText(),
+  NS_PASSWORD:      optionalText(),
   NS_TIMEOUT_MS:    z.coerce.number().int().positive().default(15000),
 
   SESSION_TTL_HOURS: z.coerce.number().int().positive().default(12),
@@ -43,3 +56,19 @@ if (!parsed.success) {
 
 export const config = Object.freeze(parsed.data);
 export const isProd = config.NODE_ENV === 'production';
+
+const NS_KEYS = ['NS_BASE_URL', 'NS_CLIENT_ID', 'NS_CLIENT_SECRET', 'NS_USERNAME', 'NS_PASSWORD'];
+
+// Which SkySwitch settings are still missing. Empty means fully configured.
+export const missingNsSettings = NS_KEYS.filter((k) => !config[k]);
+export const NS_CONFIGURED = missingNsSettings.length === 0;
+
+if (!NS_CONFIGURED) {
+  // Not fatal, but it should be impossible to miss in the journal.
+  console.warn(
+    `SkySwitch is not configured (${missingNsSettings.join(', ')} not set). ` +
+    'Sign-in, branding and the staff console work; call-routing screens will ' +
+    'report that SkySwitch is not connected. Set these in /etc/portal/portal.env ' +
+    'and restart to enable them.',
+  );
+}

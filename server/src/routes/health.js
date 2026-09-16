@@ -1,5 +1,6 @@
 import express from 'express';
 import { query } from '../db.js';
+import { NS_CONFIGURED, missingNsSettings } from '../config.js';
 
 export const healthRouter = express.Router();
 
@@ -14,7 +15,14 @@ healthRouter.get('/healthz', (_req, res) => {
 healthRouter.get('/readyz', async (_req, res) => {
   try {
     await query('SELECT 1');
-    res.json({ ok: true, db: 'up' });
+    // Not being connected to SkySwitch does not make the server unready — the
+    // console and customer sign-in work without it — but it should be visible.
+    res.json({
+      ok: true,
+      db: 'up',
+      skyswitch: NS_CONFIGURED ? 'configured' : 'not_configured',
+      ...(NS_CONFIGURED ? {} : { missing: missingNsSettings }),
+    });
   } catch {
     res.status(503).json({ ok: false, db: 'down' });
   }

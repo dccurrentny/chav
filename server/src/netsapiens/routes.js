@@ -119,6 +119,15 @@ nsRouter.post('/:operation', writeLimiter, async (req, res, next) => {
         result: 'error', error: err.message, durationMs: err.durationMs ?? null, ip: req.ip,
       });
       logger.warn({ op: name, status: err.status, detail: err.detail }, 'SkySwitch call failed');
+      if (err.notConfigured) {
+        return res.status(503).json({
+          error: 'not_configured',
+          message: 'This portal is not connected to the phone system yet. ' +
+                   'Your provider is still setting it up.',
+          retryable: false,
+        });
+      }
+
       // A read that fails saved nothing because it was never saving anything;
       // saying otherwise invents a change the customer did not make.
       const message = op.write

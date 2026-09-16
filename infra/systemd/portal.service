@@ -4,6 +4,12 @@ After=network-online.target postgresql.service
 Wants=network-online.target
 Requires=postgresql.service
 
+# If it crash-loops, stop and leave it down rather than restarting forever.
+# These belong in [Unit]; systemd ignores them under [Service], which is how
+# a broken config managed 300+ restarts instead of 5.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=portal
@@ -18,9 +24,6 @@ ExecStart=/usr/bin/node src/index.js
 Restart=always
 RestartSec=3
 
-# If it crash-loops, stop and leave it down rather than hammering SkySwitch.
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 StandardOutput=journal
 StandardError=journal

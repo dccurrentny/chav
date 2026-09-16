@@ -3,7 +3,7 @@
 // Holds the reseller credentials and the OAuth2 token for the whole process.
 // Nothing here is per-viewer: the browser never sees a NetSapiens token, and
 // the token is refreshed centrally rather than once per customer session.
-import { config } from '../config.js';
+import { config, NS_CONFIGURED, missingNsSettings } from '../config.js';
 import { logger } from '../logger.js';
 
 const NS_API_PATH = '/ns-api/';
@@ -99,6 +99,15 @@ async function refreshToken() {
 }
 
 async function getToken() {
+  if (!NS_CONFIGURED) {
+    // Distinct from an outage: nothing is wrong with SkySwitch, this server has
+    // simply never been given credentials. Not retryable — retrying cannot help.
+    throw new NsError('SkySwitch is not connected on this server', {
+      notConfigured: true,
+      missing: missingNsSettings,
+      retryable: false,
+    });
+  }
   if (cached && Date.now() < cached.expiresAt - EXPIRY_SKEW_MS) {
     return cached.accessToken;
   }
