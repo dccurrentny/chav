@@ -31,6 +31,16 @@ export function requireAuth(req, res, next) {
   if (!req.session) {
     return res.status(401).json({ error: 'not_authenticated', message: 'Sign in to continue.' });
   }
+  // Defence in depth. Session cookies are host-only, so a cookie issued on one
+  // customer's hostname is not sent to another's — but if that ever stopped
+  // holding (a Domain attribute added by mistake, a proxy rewriting Host),
+  // this is what still keeps the tenants apart.
+  if (!req.tenant || req.session.tenant_id !== req.tenant.id) {
+    return res.status(401).json({
+      error: 'wrong_portal',
+      message: 'That session belongs to a different portal. Sign in again.',
+    });
+  }
   next();
 }
 

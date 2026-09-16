@@ -111,11 +111,19 @@ nsRouter.post('/:operation', writeLimiter, async (req, res, next) => {
         result: 'error', error: err.message, durationMs: err.durationMs ?? null, ip: req.ip,
       });
       logger.warn({ op: name, status: err.status, detail: err.detail }, 'SkySwitch call failed');
+      // A read that fails saved nothing because it was never saving anything;
+      // saying otherwise invents a change the customer did not make.
+      const message = op.write
+        ? (err.retryable
+            ? 'SkySwitch did not respond. Your change was not saved — try again in a moment.'
+            : 'SkySwitch rejected the change. Nothing was saved.')
+        : (err.retryable
+            ? 'SkySwitch did not respond, so these settings could not be loaded. Try again in a moment.'
+            : 'SkySwitch could not return these settings right now.');
+
       return res.status(err.retryable ? 503 : 502).json({
         error: 'upstream_failed',
-        message: err.retryable
-          ? 'SkySwitch did not respond. Your change was not saved — try again in a moment.'
-          : 'SkySwitch rejected the change. Nothing was saved.',
+        message,
         retryable: Boolean(err.retryable),
       });
     }

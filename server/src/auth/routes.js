@@ -6,8 +6,12 @@ import { logger } from '../logger.js';
 import { verifyPassword } from './password.js';
 import { createSession, destroySession, cookieOptions, COOKIE_NAME } from './session.js';
 import { requireAuth } from './middleware.js';
+import { requireTenant } from '../tenant.js';
 
 export const authRouter = express.Router();
+
+// Every auth route is meaningless without a tenant to authenticate against.
+authRouter.use(requireTenant);
 
 // Per-IP ceiling. The per-account lockout below is the one that stops a
 // targeted attack; this one stops a single host spraying many accounts.
@@ -62,11 +66,15 @@ authRouter.post('/login', loginLimiter, async (req, res, next) => {
       });
     }
 
+    // Scope the lookup to the tenant that owns this hostname. A user from
+    // another customer is simply not found here, so Acme's credentials do
+    // nothing on Bolt's portal — and the response cannot be used to discover
+    // that the account exists somewhere else.
     const { rows } = await query(
       `SELECT u.id, u.email, u.password_hash, u.status, t.status AS tenant_status
          FROM users u JOIN tenants t ON t.id = u.tenant_id
-        WHERE u.email = $1`,
-      [email],
+        WHERE u.email = $1 AND u.tenant_id = $2`,
+      [email, req.tenant.id],
     );
     const user = rows[0];
 

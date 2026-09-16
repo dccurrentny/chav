@@ -9,6 +9,8 @@ import { authRouter } from './auth/routes.js';
 import { nsRouter } from './netsapiens/routes.js';
 import { auditRouter } from './routes/audit.js';
 import { healthRouter } from './routes/health.js';
+import { brandingRouter, internalRouter } from './routes/branding.js';
+import { resolveTenant, requireTenant } from './tenant.js';
 import { purgeExpired } from './auth/session.js';
 
 const app = express();
@@ -37,12 +39,20 @@ app.use(helmet({
 
 app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/healthz' } }));
 app.use(express.json({ limit: '64kb' }));
+
+// Health and the TLS gate are host-agnostic and must answer before any tenant
+// is resolved — Caddy asks about hostnames that do not exist yet.
+app.use(healthRouter);
+app.use(internalRouter);
+
+// Everything below is scoped to the customer whose hostname was used.
+app.use(resolveTenant);
 app.use(attachSession);
 
-app.use(healthRouter);
+app.use('/api', brandingRouter);
 app.use('/api/auth', authRouter);
-app.use('/api/ns', nsRouter);
-app.use('/api/audit', auditRouter);
+app.use('/api/ns', requireTenant, nsRouter);
+app.use('/api/audit', requireTenant, auditRouter);
 
 app.use('/api', (_req, res) => {
   res.status(404).json({ error: 'not_found', message: 'No such endpoint.' });

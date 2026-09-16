@@ -46,14 +46,49 @@ touching anything else.
 
 ### Add a customer
 
+Every customer gets their own hostname. One app serves all of them; the
+hostname decides which customer a request belongs to.
+
 ```bash
 cd /opt/chav/server
-node scripts/seed-tenant.js "Acme Electric" acme.yourdomain.com owner@acme.com
+node scripts/seed-tenant.js \
+  --name "Acme Electric" \
+  --ns-domain acme.yourdomain.com \
+  --hostname acme.portal.dccurrentny.com \
+  --admin owner@acme.com \
+  --color '#2F6FED' --support-email help@dccurrentny.com
 ```
+
+Then point an A record for that hostname at the droplet. **No Caddy change is
+needed** — on-demand TLS obtains the certificate on the first request, gated by
+`/internal/tls-check` so only hostnames belonging to an active tenant qualify.
 
 Prints a generated password **once**. Send it over a channel you trust, then
 delete your copy. It is not recoverable — to reissue, run again with a
-different email and disable the old user.
+different `--admin` and disable the old user.
+
+### Rebrand a customer
+
+```sql
+UPDATE tenants
+   SET brand_name = 'Acme Electric Co',
+       brand_color = '#1D4ED8',
+       logo_url = 'https://…/logo.png',
+       support_email = 'help@dccurrentny.com'
+ WHERE hostname = 'acme.portal.dccurrentny.com';
+```
+
+Takes effect within 30 seconds — hostnames are cached that long in-process.
+
+### Move a customer to a new hostname
+
+```sql
+UPDATE tenants SET hostname = 'phones.acme.com'
+ WHERE ns_domain = 'acme.yourdomain.com';
+```
+
+Point the new DNS record at the droplet. Their existing sessions will not work
+on the new hostname — cookies are host-only — so they sign in once more.
 
 ### Disable a user or tenant immediately
 
@@ -66,6 +101,30 @@ UPDATE tenants SET status = 'suspended' WHERE ns_domain = 'acme.yourdomain.com';
 ---
 
 ## Incidents
+
+### A customer's portal shows "Portal not found"
+
+Their hostname is not on an active tenant. Check what the database has:
+
+```sql
+SELECT name, hostname, status FROM tenants WHERE hostname = '<what they typed>';
+```
+
+A typo in `hostname`, a suspended tenant, and a hostname that was never set all
+produce this same page — deliberately, so probing cannot enumerate customers.
+
+### A customer's certificate will not issue
+
+Caddy only requests one for a hostname that passes the gate. Test it directly:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  "localhost:3000/internal/tls-check?domain=acme.portal.dccurrentny.com"
+```
+
+`200` means Caddy is allowed to issue. `404` means the hostname is not on an
+active tenant — fix that first. If it returns 200 and the certificate still
+fails, DNS is not pointing here yet: `dig +short <hostname>`.
 
 ### Portal returns 502 / Caddy says upstream unavailable
 
@@ -201,3 +260,10 @@ Changing any of these needs a deliberate review, not a quick edit:
 5. **Secrets live only in `/etc/portal/*.env`**, never in the repo, the systemd
    unit, or a log line. `server/src/logger.js` redacts tokens and passwords.
 6. **Writes require the `admin` role and a CSRF header.** Reads do not.
+7. **The hostname decides the tenant, and login is scoped to it.** A user is
+   looked up by email *and* tenant, so one customer's credentials do nothing on
+   another's portal. `requireAuth` additionally refuses a session whose tenant
+   does not match the hostname — defence in depth behind host-only cookies.
+8. **`/internal/tls-check` must stay unreachable from outside.** Caddy calls it
+   on loopback; the public site block returns 404 for `/internal/*`. Exposing it
+   would let anyone enumerate customer hostnames.
