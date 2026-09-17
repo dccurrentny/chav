@@ -21,6 +21,14 @@ export const PBX_KEYS = Object.freeze([
   'NS_BASE_URL', 'NS_CLIENT_ID', 'NS_CLIENT_SECRET', 'NS_USERNAME', 'NS_PASSWORD',
 ]);
 
+// Only these vary per customer. The client ID and secret identify the RESELLER's
+// registered application — issued once by SkySwitch and shared by every call
+// this server makes — and the base address is the reseller's portal node. What
+// changes per customer is which Subscriber signs in, and a Subscriber's scope
+// is what decides the token's reach.
+export const PBX_TENANT_KEYS = Object.freeze(['NS_USERNAME', 'NS_PASSWORD']);
+export const TELCO_TENANT_KEYS = Object.freeze(['TELCO_USERNAME', 'TELCO_PASSWORD']);
+
 // TELCO_AUTH_STYLE is not a credential but decides how the others are used:
 //   bearer — Authorization: Bearer <TELCO_API_KEY>
 //   basic  — Authorization: Basic base64(TELCO_USERNAME:TELCO_PASSWORD)
@@ -95,7 +103,7 @@ async function loadTenantStored(tenantId) {
       query('SELECT credential_mode FROM tenants WHERE id = $1', [tenantId]),
     ]);
     for (const row of creds.rows) {
-      if (!PBX_KEYS.includes(row.key)) continue;
+      if (!TENANT_OVERRIDABLE.includes(row.key)) continue;
       try { values[row.key] = decrypt(row.value_enc); }
       catch { logger.error({ tenantId, key: row.key }, 'could not decrypt a tenant setting'); }
     }
@@ -113,8 +121,10 @@ export async function setTenantCredentialMode(tenantId, mode) {
   invalidateTenantSettings(tenantId);
 }
 
+const TENANT_OVERRIDABLE = Object.freeze([...PBX_TENANT_KEYS, ...TELCO_TENANT_KEYS]);
+
 export async function setTenantSettings(tenantId, entries, staffId) {
-  const bad = Object.keys(entries).filter((k) => !PBX_KEYS.includes(k));
+  const bad = Object.keys(entries).filter((k) => !TENANT_OVERRIDABLE.includes(k));
   if (bad.length) throw new Error(`not a per-customer key: ${bad.join(', ')}`);
 
   for (const [key, value] of Object.entries(entries)) {
@@ -134,50 +144,73 @@ export async function setTenantSettings(tenantId, entries, staffId) {
 }
 
 /**
- * The PBX credentials to use for a tenant.
+ * Credentials for one server, for one tenant.
+ *
+ * The reseller's application registration and portal address always come from
+ * the shared settings — they are the same for every call this server makes.
+ * Only the Subscriber signing in can differ per customer, and only when that
+ * customer is set to 'own'.
  *
  * The choice is stated on the tenant, not inferred from whether fields happen
- * to be filled in. A customer set to 'own' with an incomplete set is an error,
- * not a quiet fallback: falling back would hand a customer deliberately kept
- * off the reseller credential exactly that credential.
+ * to be filled in. A customer set to 'own' with its subscriber half-entered is
+ * an error, not a quiet fallback: falling back would sign in as the shared
+ * subscriber, which is exactly what choosing 'own' was meant to avoid.
  */
-export async function getNsSettingsForTenant(tenantId) {
-  if (!tenantId) return getNsSettings();
+async function settingsForTenant(tenantId, allKeys, tenantKeys, getShared) {
+  const shared = await getShared();
+  if (!tenantId) return shared;
 
   const { values, mode } = await loadTenantStored(tenantId);
-  if (mode !== 'own') return getNsSettings();
+  if (mode !== 'own') return shared;
 
-  const missing = PBX_KEYS.filter((k) => !values[k]);
-  if (missing.length) {
-    // Reported as unset rather than substituted, so the caller says so.
-    return Object.fromEntries(PBX_KEYS.map((k) => [k, {
-      value: values[k] ?? null, set: Boolean(values[k]), source: 'tenant',
-    }]));
+  const out = {};
+  for (const key of allKeys) {
+    if (tenantKeys.includes(key)) {
+      out[key] = {
+        value: values[key] ?? null,
+        set: Boolean(values[key]),
+        source: 'tenant',
+      };
+    } else {
+      out[key] = shared[key];
+    }
   }
-  return Object.fromEntries(PBX_KEYS.map((k) => [k, { value: values[k], set: true, source: 'tenant' }]));
+  return out;
+}
+
+export function getNsSettingsForTenant(tenantId) {
+  return settingsForTenant(tenantId, PBX_KEYS, PBX_TENANT_KEYS, getNsSettings);
+}
+
+export function getTelcoSettingsForTenant(tenantId) {
+  return settingsForTenant(tenantId, TELCO_KEYS, TELCO_TENANT_KEYS, getTelcoSettings);
 }
 
 /** Which per-customer keys are set, for the console. Never their values. */
 export async function describeTenantNsSettings(tenantId) {
   const { values, mode } = await loadTenantStored(tenantId);
-  const complete = PBX_KEYS.every((k) => values[k]);
-  const out = {
+  const complete = PBX_TENANT_KEYS.every((k) => values[k]);
+  const telcoComplete = TELCO_TENANT_KEYS.every((k) => values[k]);
+
+  const describe = (keys) => Object.fromEntries(keys.map((key) => [key, {
+    set: Boolean(values[key]),
+    value: SECRET_KEYS.includes(key) ? null : (values[key] ?? null),
+  }]));
+
+  return {
     mode,
     complete,
     inUse: mode === 'own' && complete,
     // Chosen 'own' but not finished: the customer cannot reach SkySwitch at
-    // all, which is the honest state and better than a silent reseller call.
+    // all, which is the honest state and better than a silent shared sign-in.
     incomplete: mode === 'own' && !complete,
-    missing: PBX_KEYS.filter((k) => !values[k]),
-    keys: {},
+    missing: PBX_TENANT_KEYS.filter((k) => !values[k]),
+    keys: describe(PBX_TENANT_KEYS),
+    telco: {
+      complete: telcoComplete,
+      keys: describe(TELCO_TENANT_KEYS),
+    },
   };
-  for (const key of PBX_KEYS) {
-    out.keys[key] = {
-      set: Boolean(values[key]),
-      value: SECRET_KEYS.includes(key) ? null : (values[key] ?? null),
-    };
-  }
-  return out;
 }
 
 // Read on every SkySwitch call, so cache briefly. Short enough that a change

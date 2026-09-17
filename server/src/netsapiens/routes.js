@@ -99,7 +99,8 @@ nsRouter.post('/:operation', writeLimiter, async (req, res, next) => {
     // speak differently — object/action against the PBX, method/path against
     // Telco — so this is a fork, not a base-URL swap.
     const { data, durationMs } = op.server === 'telco'
-      ? await telcoRequest(op.method, op.path, { query: params, body: op.sendBody ? parsed.data : null })
+      ? await telcoRequest(op.method, op.path, {
+          query: params, body: op.sendBody ? parsed.data : null, tenantId: s.tenant_id })
       // The tenant decides which credentials are used: its own if it has them,
       // otherwise the server-wide ones.
       : await nsRequest(op.object, op.action, params, { tenantId: s.tenant_id });

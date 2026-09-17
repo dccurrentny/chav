@@ -293,14 +293,32 @@
       '</td></tr>';
   }
 
-  // The five PBX fields, per customer. Same names as the shared connection.
+// Only the Subscriber varies per customer. The client ID and secret identify
+// the reseller's registered application and live in System.
   var TENANT_CRED_FIELDS = [
-    ['NS_BASE_URL',      'Base address',  'https://portal.yourcompany.com', false],
-    ['NS_CLIENT_ID',     'Client ID',     '',  false],
-    ['NS_CLIENT_SECRET', 'Client secret', '',  true],
-    ['NS_USERNAME',      'API username',  '2001@acme.23763.service',  false],
-    ['NS_PASSWORD',      'API password',  '',  true],
+    ['NS_USERNAME', 'API username', '2001@acme', false],
+    ['NS_PASSWORD', 'API password', '',          true],
   ];
+  var TENANT_TELCO_FIELDS = [
+    ['TELCO_USERNAME', 'Telco API username', '', false],
+    ['TELCO_PASSWORD', 'Telco API password', '', true],
+  ];
+
+  function credFieldsHtml(fields, keys, prefix) {
+    return fields.map(function (f) {
+      var key = f[0], label = f[1], ph = f[2], secret = f[3];
+      var info = (keys && keys[key]) || {};
+      return '<div class="field">' +
+        '<label for="' + prefix + key + '">' + h(label) +
+          ' <span style="opacity:.6;font-weight:400">&mdash; ' +
+          (info.set ? 'set' : 'not set') + '</span></label>' +
+        '<input id="' + prefix + key + '" type="' + (secret ? 'password' : 'text') + '" ' +
+          'autocomplete="new-password" placeholder="' +
+          h(secret && info.set ? '•••••••• (leave blank to keep)' : ph) + '" ' +
+          'value="' + h(secret ? '' : (info.value || '')) + '">' +
+      '</div>';
+    }).join('');
+  }
 
   // A customer can hold its own SkySwitch subscriber. Where it does, SkySwitch
   // enforces the boundary itself and no reseller-scoped credential is needed
@@ -332,20 +350,19 @@
           'Local is tighter: a subscriber scoped to <b>' + h(t.ns_domain) + '</b> is enough &mdash; ' +
           'Office Manager, not Reseller &mdash; and then SkySwitch itself refuses anything ' +
           'outside this customer, rather than this application being the only thing that does. ' +
-          'No reseller credential is needed anywhere if every customer is local.</div></div>' +
-        TENANT_CRED_FIELDS.map(function (f) {
-          var key = f[0], label = f[1], ph = f[2], secret = f[3];
-          var info = (d.keys && d.keys[key]) || {};
-          return '<div class="field">' +
-            '<label for="tc_' + key + '">' + h(label) +
-              ' <span style="opacity:.6;font-weight:400">&mdash; ' +
-              (info.set ? 'set' : 'not set') + '</span></label>' +
-            '<input id="tc_' + key + '" type="' + (secret ? 'password' : 'text') + '" ' +
-              'autocomplete="new-password" placeholder="' +
-              h(secret && info.set ? '•••••••• (leave blank to keep)' : ph) + '" ' +
-              'value="' + h(secret ? '' : (info.value || '')) + '">' +
-          '</div>';
-        }).join('') +
+          'Shared signs in as the one subscriber configured in System, whose scope decides ' +
+          'how far it reaches.</div></div>' +
+        '<p class="desc" style="margin-top:14px"><b>PBX subscriber</b> &mdash; ' +
+          'a Subscriber that can sign in to the Manager portal for ' +
+          h(t.ns_domain) + '. Office Manager scope is enough; the client ID and ' +
+          'secret come from your reseller registration in System and are not ' +
+          'entered here.</p>' +
+        credFieldsHtml(TENANT_CRED_FIELDS, d.keys, 'tc_') +
+
+        '<p class="desc" style="margin-top:14px"><b>Telco subscriber</b> &mdash; ' +
+          'optional. Leave blank unless this customer has its own Telco login; ' +
+          'the Telco API is normally reseller-level.</p>' +
+        credFieldsHtml(TENANT_TELCO_FIELDS, (d.telco || {}).keys, 'tc_') +
         '<div class="row-end">' +
           '<button class="btn-danger" id="tcClear">Clear and use shared</button>' +
           '<button class="btn-ghost" id="tcTest">Test connection</button>' +
@@ -370,7 +387,7 @@
     var body = {};
     var mode = document.getElementById('tc_mode');
     if (mode) body.mode = mode.value;
-    TENANT_CRED_FIELDS.forEach(function (f) {
+    TENANT_CRED_FIELDS.concat(TENANT_TELCO_FIELDS).forEach(function (f) {
       var el = document.getElementById('tc_' + f[0]);
       if (!el) return;
       var v = el.value.trim();
@@ -431,7 +448,7 @@
     if (!confirm('Remove ' + t.name + "'s own credentials?\n\n" +
                  'They will fall back to the shared credentials in System.')) return;
     var body = { mode: 'shared' };
-    TENANT_CRED_FIELDS.forEach(function (f) { body[f[0]] = null; });
+    TENANT_CRED_FIELDS.concat(TENANT_TELCO_FIELDS).forEach(function (f) { body[f[0]] = null; });
     try {
       await api('/tenants/' + t.id + '/credentials', { method: 'PUT', body: body });
       credentialsModal(t);

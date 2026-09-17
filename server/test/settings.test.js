@@ -64,16 +64,35 @@ test('every operation names the server it belongs to', async () => {
   }
 });
 
-test('a customer set to its own credentials never falls back to the shared ones', async () => {
-  // The choice used to be inferred from whether the fields happened to be
-  // filled. That turns a half-finished local setup into a reseller-
-  // credentialled one, which is the opposite of what choosing local means.
-  const src = await import('node:fs/promises')
-    .then((fs) => fs.readFile(new URL('../src/settings.js', import.meta.url), 'utf8'));
+test('only the subscriber varies per customer', async () => {
+  // The client ID and secret identify the RESELLER's registered application,
+  // issued once by SkySwitch. Asking each customer for them would mean pasting
+  // the same reseller secret repeatedly, and implies it is theirs to change.
+  const { PBX_TENANT_KEYS, TELCO_TENANT_KEYS, PBX_KEYS, TELCO_KEYS } =
+    await import('../src/settings.js');
 
-  assert.match(src, /if \(mode !== 'own'\) return getNsSettings\(\)/,
-    'the shared credentials are not gated on the stated mode');
-  // An incomplete 'own' set is reported as unset, not substituted.
-  assert.match(src, /Reported as unset rather than substituted/,
-    'an incomplete local set may still fall through to the shared credentials');
+  assert.deepEqual([...PBX_TENANT_KEYS], ['NS_USERNAME', 'NS_PASSWORD']);
+  assert.deepEqual([...TELCO_TENANT_KEYS], ['TELCO_USERNAME', 'TELCO_PASSWORD']);
+
+  for (const reseller of ['NS_CLIENT_ID', 'NS_CLIENT_SECRET', 'NS_BASE_URL']) {
+    assert.ok(!PBX_TENANT_KEYS.includes(reseller),
+      `${reseller} belongs to the reseller but is settable per customer`);
+    assert.ok(PBX_KEYS.includes(reseller), `${reseller} is no longer a shared setting`);
+  }
+  for (const reseller of ['TELCO_CLIENT_ID', 'TELCO_CLIENT_SECRET', 'TELCO_BASE_URL']) {
+    assert.ok(!TELCO_TENANT_KEYS.includes(reseller),
+      `${reseller} belongs to the reseller but is settable per customer`);
+    assert.ok(TELCO_KEYS.includes(reseller), `${reseller} is no longer a shared setting`);
+  }
+});
+
+test('a per-customer key must be one the server expects to vary', async () => {
+  // setTenantSettings refuses anything else, so a stray key cannot be used to
+  // override the reseller's own registration for one customer.
+  const { setTenantSettings } = await import('../src/settings.js');
+  await assert.rejects(
+    () => setTenantSettings('00000000-0000-0000-0000-000000000000',
+      { NS_CLIENT_SECRET: 'x' }, null),
+    /not a per-customer key/,
+  );
 });

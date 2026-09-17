@@ -12,6 +12,7 @@ import {
   describeNsSettings, describeTelcoSettings, setSettings,
   getNsSettings, getTelcoSettings, PBX_KEYS, TELCO_KEYS,
   describeTenantNsSettings, setTenantSettings, setTenantCredentialMode,
+  PBX_TENANT_KEYS, TELCO_TENANT_KEYS,
 } from '../settings.js';
 import { testConnection, _resetTokenCache } from '../netsapiens/client.js';
 import { testTelcoConnection, _resetTelcoToken, AUTH_STYLES, TELCO_SCOPES } from '../telco/client.js';
@@ -235,7 +236,11 @@ adminRouter.get('/tenants/:id/credentials', requireOwner, async (req, res, next)
 adminRouter.put('/tenants/:id/credentials', requireOwner, async (req, res, next) => {
   try {
     const shape = { mode: z.enum(['shared', 'own']).optional() };
-    for (const key of PBX_KEYS) shape[key] = z.string().max(500).nullish();
+    // Only the keys that legitimately vary per customer; the reseller's own
+    // registration is not something a customer record may override.
+    for (const key of [...PBX_TENANT_KEYS, ...TELCO_TENANT_KEYS]) {
+      shape[key] = z.string().max(500).nullish();
+    }
     const parsed = z.object(shape).strict().safeParse(req.body ?? {});
     if (!parsed.success) return bad(res, parsed.error.issues);
 

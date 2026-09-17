@@ -9,7 +9,8 @@
 // the Telco API turns out to use an object/action convention like the PBX, that
 // belongs in the operation definitions, not here.
 import { config } from '../config.js';
-import { getTelcoSettings } from '../settings.js';
+import { getTelcoSettingsForTenant } from '../settings.js';
+import crypto from 'node:crypto';
 import { logger } from '../logger.js';
 import { NsError } from '../netsapiens/client.js';
 
@@ -23,16 +24,18 @@ export const TELCO_SCOPES = Object.freeze([
   'messaging', 'report', 'branding', 'port-in', 'ten_dlc', 'tollfree_a2p',
 ]);
 
-let cachedToken = null;    // oauth2 only
-let inFlight = null;
+// One token per credential set, as on the PBX side: a customer signing in as
+// its own subscriber must not share another customer's token.
+const tokens = new Map();
+const inFlight = new Map();
 
 export function _resetTelcoToken() {
-  cachedToken = null;
-  inFlight = null;
+  tokens.clear();
+  inFlight.clear();
 }
 
-async function creds() {
-  const s = await getTelcoSettings();
+async function creds(tenantId = null) {
+  const s = await getTelcoSettingsForTenant(tenantId);
   const v = Object.fromEntries(Object.entries(s).map(([k, x]) => [k, x.value]));
   const style = (v.TELCO_AUTH_STYLE || 'bearer').toLowerCase();
 
@@ -45,7 +48,10 @@ async function creds() {
   else                         required = ['TELCO_BASE_URL', 'TELCO_API_KEY'];
 
   const missing = required.filter((k) => !v[k]);
-  return { values: v, style, missing, configured: missing.length === 0 };
+  const fingerprint = crypto.createHash('sha256')
+    .update(JSON.stringify([v.TELCO_BASE_URL, v.TELCO_CLIENT_ID, v.TELCO_USERNAME]))
+    .digest('hex');
+  return { values: v, style, missing, configured: missing.length === 0, fingerprint };
 }
 
 function transportError(err) {
@@ -58,9 +64,10 @@ function transportError(err) {
 }
 
 async function oauthToken(c) {
+  const cachedToken = tokens.get(c.fingerprint);
   if (cachedToken && Date.now() < cachedToken.expiresAt - 60_000) return cachedToken.accessToken;
 
-  inFlight ??= (async () => {
+  if (!inFlight.has(c.fingerprint)) inFlight.set(c.fingerprint, (async () => {
     const v = c.values;
     // Configurable: SkySwitch documents this on telco.readme.io and it is not
     // worth hard-coding a path from memory when getting it wrong looks like an
@@ -94,14 +101,15 @@ async function oauthToken(c) {
     }
     const json = await res.json().catch(() => null);
     if (!json?.access_token) throw new NsError('Telco token response had no access_token');
-    cachedToken = {
+    const tok = {
       accessToken: json.access_token,
       expiresAt: Date.now() + (Number(json.expires_in) || 3600) * 1000,
     };
-    return cachedToken.accessToken;
-  })().finally(() => { inFlight = null; });
+    tokens.set(c.fingerprint, tok);
+    return tok.accessToken;
+  })().finally(() => { inFlight.delete(c.fingerprint); }));
 
-  return inFlight;
+  return inFlight.get(c.fingerprint);
 }
 
 async function authHeader(c) {
@@ -122,8 +130,8 @@ async function authHeader(c) {
  * `path` comes from an operation definition, never from a client, and query
  * parameters are built here so a value can never smuggle in a second one.
  */
-export async function telcoRequest(method, path, { query = {}, body = null } = {}) {
-  const c = await creds();
+export async function telcoRequest(method, path, { query = {}, body = null, tenantId = null } = {}) {
+  const c = await creds(tenantId);
   if (!c.configured) {
     throw new NsError('The SkySwitch Telco API is not connected on this server', {
       notConfigured: true,
@@ -157,9 +165,9 @@ export async function telcoRequest(method, path, { query = {}, body = null } = {
   }
 
   // An expired oauth2 token looks like any other 401; drop it and try once.
-  if (res.status === 401 && c.style === 'oauth2' && cachedToken) {
-    _resetTelcoToken();
-    return telcoRequest(method, path, { query, body });
+  if (res.status === 401 && c.style === 'oauth2' && tokens.has(c.fingerprint)) {
+    tokens.delete(c.fingerprint);
+    return telcoRequest(method, path, { query, body, tenantId });
   }
 
   const durationMs = Date.now() - started;
@@ -180,9 +188,9 @@ export async function telcoRequest(method, path, { query = {}, body = null } = {
 }
 
 /** Used by the console's Test connection button for the Telco server. */
-export async function testTelcoConnection() {
+export async function testTelcoConnection(tenantId = null) {
   _resetTelcoToken();
-  const c = await creds();
+  const c = await creds(tenantId);
   if (!c.configured) return { ok: false, reason: 'not_configured', missing: c.missing };
 
   try {

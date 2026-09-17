@@ -150,16 +150,22 @@ A SkySwitch token carries a scope, and the scope decides what it can reach:
 | Office Manager | that subscriber's domain |
 | Reseller | every domain under the reseller |
 
-Each customer states which it uses, in **Customers → API access**:
+The **client ID and secret are the reseller's**: one application registration
+from SkySwitch, shared by every call this server makes, set once in System
+along with the portal address. They are never entered per customer.
 
-- **Shared** — the reseller credentials in System. Simplest. The token *could*
-  reach any customer, so only this application keeps them apart.
-- **Local** — this customer's own subscriber. An Office Manager scoped to their
-  domain is enough, and then SkySwitch enforces the boundary as well: a bug in
-  our domain scoping cannot cross it.
+What varies per customer is **which Subscriber signs in**, and a Subscriber's
+scope is what decides how far the token reaches. Each customer states this in
+**Customers → API access**:
 
-If every customer is local, no reseller credential is needed anywhere on the
-server. That is the tighter arrangement and the one to prefer.
+- **Shared** — sign in as the one subscriber configured in System. Simplest.
+  If that subscriber is Reseller-scoped its token could reach any customer, so
+  only this application keeps them apart.
+- **Local** — sign in as this customer's own subscriber. An Office Manager
+  scoped to their domain is enough, and then SkySwitch enforces the boundary
+  as well: a bug in our domain scoping cannot cross it.
+
+Local for every customer is the tighter arrangement and the one to prefer.
 
 The choice is stated, not inferred. A customer set to **local** with fields
 still missing cannot reach SkySwitch at all, and says so — it will not quietly
