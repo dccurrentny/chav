@@ -1,12 +1,17 @@
 name: Deploy portal
 
+# Deliberately NOT on push to main yet. Three things this needs do not exist:
+# the `deploy` user it logs in as (provision.sh does not create one), the
+# DEPLOY_HOST and DEPLOY_SSH_KEY secrets, and the DATABASE_URL fix its migrate
+# step needs — see RUNBOOK.md. Wired to push before all that is done, every
+# merge to main goes red, and a half-working SSH would leave the droplet on new
+# code with the service never restarted.
+#
+# When the deploy user and secrets are in place, restore:
+#   push:
+#     branches: [main]
+#     paths: ['server/**', 'infra/**', '.github/workflows/deploy.yml']
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'server/**'
-      - 'infra/**'
-      - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
 concurrency:
