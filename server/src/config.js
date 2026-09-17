@@ -35,6 +35,21 @@ const schema = z.object({
   NS_PASSWORD:      optionalText(),
   NS_TIMEOUT_MS:    z.coerce.number().int().positive().default(15000),
 
+  // --- SkySwitch Telco API ---
+  //
+  // The second SkySwitch server: numbers, routing, e911, porting, billing.
+  // Optional for the same reason the PBX settings are, and settable from the
+  // console; these let an installation seed them from portal.env instead.
+  TELCO_BASE_URL:      optionalUrl(),
+  TELCO_AUTH_STYLE:    optionalText(),
+  TELCO_TOKEN_PATH:    optionalText(),
+  TELCO_SCOPES:        optionalText(),
+  TELCO_API_KEY:       optionalText(),
+  TELCO_USERNAME:      optionalText(),
+  TELCO_PASSWORD:      optionalText(),
+  TELCO_CLIENT_ID:     optionalText(),
+  TELCO_CLIENT_SECRET: optionalText(),
+
   SESSION_TTL_HOURS: z.coerce.number().int().positive().default(12),
 
   // The staff console answers on exactly this hostname and nowhere else.
