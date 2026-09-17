@@ -112,7 +112,8 @@
     root.innerHTML =
       '<div class="login-shell"><div class="login">' +
         '<div class="login-head">' + logoMarkup(b) +
-          '<h1>' + h(b.name) + '</h1><p>Phone settings</p></div>' +
+          '<h1>' + h(b.name) + '</h1><p>' +
+          (b.shared ? 'Sign in with your account email' : 'Phone settings') + '</p></div>' +
         '<div class="card">' +
           (message ? '<div class="alert alert-err">' + h(message) + '</div>' : '') +
           '<form id="loginForm" novalidate>' +

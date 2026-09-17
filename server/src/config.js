@@ -56,6 +56,12 @@ const schema = z.object({
   // Leave it unset and the console is simply not served — a safe default for
   // an installation that does not want one exposed.
   ADMIN_HOSTNAME: z.string().min(1).optional(),
+
+  // The shared customer portal: one address any customer can sign in to, where
+  // the tenant comes from the account rather than the hostname. Customers who
+  // want their own address still get one; this is the default door for the
+  // rest, so the bare portal domain is not claimed by whoever signs up first.
+  SHARED_PORTAL_HOSTNAME: z.string().min(1).optional(),
   LOG_LEVEL:         z.enum(['fatal','error','warn','info','debug','trace']).default('info'),
 });
 

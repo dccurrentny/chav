@@ -1,5 +1,5 @@
 import express from 'express';
-import { lookupByHostname } from '../tenant.js';
+import { lookupByHostname, isReservedHostname } from '../tenant.js';
 
 export const brandingRouter = express.Router();
 
@@ -7,6 +7,18 @@ export const brandingRouter = express.Router();
 // authenticated. Returns only what is safe to show a stranger who typed the
 // hostname — never the NetSapiens domain, never anything about other tenants.
 brandingRouter.get('/branding', (req, res) => {
+  // The shared portal belongs to the provider. It must not wear a customer's
+  // name — before sign-in there is no customer, and guessing would show one
+  // customer's branding to another.
+  if (req.sharedPortal) {
+    return res.json({
+      name: 'Phone Settings',
+      color: null, logoUrl: null,
+      supportEmail: null, supportPhone: null,
+      shared: true,
+    });
+  }
+
   const t = req.tenant;
   if (!t || t.status !== 'active') {
     return res.status(404).json({ error: 'unknown_portal', message: 'This address is not an active portal.' });
@@ -35,6 +47,9 @@ export const internalRouter = express.Router();
 internalRouter.get('/internal/tls-check', async (req, res) => {
   const domain = String(req.query.domain ?? '');
   if (!domain) return res.status(400).send('missing domain');
+
+  // The shared portal and the staff console are ours and have no tenant row.
+  if (isReservedHostname(domain)) return res.status(200).send('ok');
 
   const tenant = await lookupByHostname(domain);
   if (tenant && tenant.status === 'active') return res.status(200).send('ok');

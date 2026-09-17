@@ -259,7 +259,9 @@
     var flip = t.status === 'active' ? 'suspended' : 'active';
     return '<tr>' +
       '<td>' + sw + h(t.name) + '</td>' +
-      '<td class="host">' + h(t.hostname || '—') + '</td>' +
+      '<td class="host">' + (t.hostname
+        ? h(t.hostname)
+        : '<span style="opacity:.65">shared portal</span>') + '</td>' +
       '<td class="host">' + h(t.ns_domain) + '</td>' +
       '<td class="host">' + (t.main_extension
         ? h(t.main_extension)
@@ -286,9 +288,13 @@
       '<div class="alert form-err" hidden></div>' +
       '<div class="field"><label for="f_name">Customer name</label>' +
         '<input id="f_name" value="' + h(editing ? t.name : '') + '" placeholder="Acme Electric"></div>' +
-      '<div class="field"><label for="f_host">Portal web address</label>' +
+      '<div class="field"><label for="f_host">Portal web address ' +
+        '<span style="opacity:.6;font-weight:400">— optional</span></label>' +
         '<input id="f_host" value="' + h(editing ? (t.hostname || '') : '') +
-        '" placeholder="acme.portal.dccurrentny.com"></div>' +
+        '" placeholder="leave blank to use the shared portal">' +
+        '<div style="font-size:11.5px;color:var(--muted);margin-top:5px">' +
+        'Blank means they sign in at the shared portal with everyone else. ' +
+        'Give an address only if this customer wants their own.</div></div>' +
       '<div class="grid2">' +
         '<div class="field"><label for="f_ns">SkySwitch domain</label>' +
           '<input id="f_ns" value="' + h(editing ? t.ns_domain : '') + '" placeholder="acme.yourdomain.com"></div>' +
@@ -311,7 +317,7 @@
           var btn = veil.querySelector('#ms');
           var body = {
             name: veil.querySelector('#f_name').value.trim(),
-            hostname: veil.querySelector('#f_host').value.trim().toLowerCase(),
+            hostname: veil.querySelector('#f_host').value.trim().toLowerCase() || null,
             ns_domain: veil.querySelector('#f_ns').value.trim(),
             main_extension: veil.querySelector('#f_ext').value.trim() || null,
             brand_color: veil.querySelector('#f_color').value.trim() || null,

@@ -5,7 +5,7 @@ import { query } from '../db.js';
 import { hashPassword } from '../auth/password.js';
 import { requireStaff, requireOwner, requireStaffCsrf } from './middleware.js';
 import { destroyAllStaffSessions } from './session.js';
-import { _clearTenantCache } from '../tenant.js';
+import { _clearTenantCache, isReservedHostname } from '../tenant.js';
 import { createGrant, impersonationUrl, IMPERSONATION_TTL_MINUTES } from './impersonate.js';
 import {
   describeNsSettings, describeTelcoSettings, setSettings,
@@ -101,7 +101,9 @@ adminRouter.get('/tenants', async (_req, res, next) => {
 const tenantInput = z.object({
   name:           z.string().min(1).max(120),
   ns_domain:      z.string().min(1).max(253),
-  hostname:       hostname,
+  // Optional. A customer without their own address signs in at the shared
+  // portal instead; the bare portal domain is not claimed by whoever is first.
+  hostname:       hostname.nullish(),
   main_extension: z.string().regex(/^\d{3,6}$/, 'must be 3-6 digits').nullish(),
   brand_color:   hexColor.nullish(),
   logo_url:      z.string().url().max(500).nullish(),
@@ -114,6 +116,14 @@ adminRouter.post('/tenants', async (req, res, next) => {
     const parsed = tenantInput.safeParse(req.body ?? {});
     if (!parsed.success) return bad(res, parsed.error.issues);
     const t = parsed.data;
+
+    if (t.hostname && isReservedHostname(t.hostname)) {
+      return res.status(409).json({
+        error: 'conflict',
+        message: 'That address is the shared portal or the staff console. ' +
+                 'Leave the address blank to put this customer on the shared portal.',
+      });
+    }
 
     const { rows } = await query(
       `INSERT INTO tenants (name, ns_domain, hostname, brand_name, brand_color,
@@ -144,6 +154,14 @@ adminRouter.patch('/tenants/:id', async (req, res, next) => {
     const patch = parsed.data;
     if (!Object.keys(patch).length) {
       return res.status(400).json({ error: 'invalid_input', message: 'Nothing to change.' });
+    }
+
+    if (patch.hostname && isReservedHostname(patch.hostname)) {
+      return res.status(409).json({
+        error: 'conflict',
+        message: 'That address is the shared portal or the staff console. ' +
+                 'Leave the address blank to put this customer on the shared portal.',
+      });
     }
 
     const { rows: [before] } = await query('SELECT * FROM tenants WHERE id = $1', [req.params.id]);

@@ -106,6 +106,21 @@ Three things hold, and are worth knowing before you rely on it:
 **Operators can see and change every customer.** Keep the list short, and
 disable leavers the same day — disabling kills their live sessions at once.
 
+### The shared portal and per-customer addresses
+
+`SHARED_PORTAL_HOSTNAME` in `/etc/portal/portal.env` is one address any
+customer can sign in to. There the account decides which customer it is: an
+email belongs to exactly one user and therefore one customer, so the lookup is
+unambiguous, and the session that results carries only that customer.
+
+A customer may also have **their own address** (Customers → Edit → Portal web
+address). Leave it blank and they use the shared portal. On their own address
+the stricter rule still applies — a sign-in is scoped to that customer, so
+another customer's credentials do nothing there.
+
+Neither the shared portal nor the staff console can be claimed as a customer
+address; the console refuses it and says what to do instead.
+
 ### Which SkySwitch credentials a customer uses
 
 A SkySwitch token carries a scope, and the scope decides what it can reach:

@@ -9,6 +9,8 @@ process.env.NS_CLIENT_SECRET ??= 'x';
 process.env.NS_USERNAME      ??= 'x';
 process.env.NS_PASSWORD      ??= 'x';
 process.env.LOG_LEVEL        ??= 'fatal';
+process.env.ADMIN_HOSTNAME         ??= 'admin.example.test';
+process.env.SHARED_PORTAL_HOSTNAME ??= 'portal.example.test';
 
 const { requireTenant } = await import('../src/tenant.js');
 const { requireAuth }   = await import('../src/auth/middleware.js');
@@ -93,4 +95,32 @@ test('a tenant with no extension set reports none, and never a default', async (
   // And it must refuse to load rules rather than fall back.
   assert.match(src, /if \(!ext\)/,
     'the portal does not guard against a missing extension');
+});
+
+test('the shared portal has no tenant of its own', async () => {
+  // It belongs to the provider. Resolving a tenant from it would mean showing
+  // one customer's name and branding to everyone who visits the front door.
+  const { isSharedPortal, isReservedHostname } = await import('../src/tenant.js');
+
+  assert.equal(isSharedPortal('portal.example.test'), true);
+  assert.equal(isSharedPortal('PORTAL.EXAMPLE.TEST'), true, 'hostname check is case-sensitive');
+  assert.equal(isSharedPortal('acme.portal.example.test'), false);
+
+  // Neither address the server answers on may be claimed by a customer.
+  assert.equal(isReservedHostname('portal.example.test'), true);
+  assert.equal(isReservedHostname('admin.example.test'), true);
+  assert.equal(isReservedHostname('acme.portal.example.test'), false);
+});
+
+test('requireTenant admits the shared portal but not an unknown host', async () => {
+  const { requireTenant } = await import('../src/tenant.js');
+  let shared = false;
+  requireTenant({ sharedPortal: true, tenant: null }, mockRes(), () => { shared = true; });
+  assert.equal(shared, true, 'the shared portal was treated as an unknown host');
+
+  const res = mockRes();
+  let unknown = false;
+  requireTenant({ sharedPortal: false, tenant: null }, res, () => { unknown = true; });
+  assert.equal(unknown, false);
+  assert.equal(res.statusCode, 404);
 });

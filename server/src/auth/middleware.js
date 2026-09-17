@@ -31,6 +31,10 @@ export function requireAuth(req, res, next) {
   if (!req.session) {
     return res.status(401).json({ error: 'not_authenticated', message: 'Sign in to continue.' });
   }
+  // On the shared portal the session carries its own tenant and every query
+  // downstream is scoped by it, so there is no hostname to check against.
+  if (req.sharedPortal) return next();
+
   // Defence in depth. Session cookies are host-only, so a cookie issued on one
   // customer's hostname is not sent to another's — but if that ever stopped
   // holding (a Domain attribute added by mistake, a proxy rewriting Host),

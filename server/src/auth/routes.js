@@ -66,16 +66,25 @@ authRouter.post('/login', loginLimiter, async (req, res, next) => {
       });
     }
 
-    // Scope the lookup to the tenant that owns this hostname. A user from
-    // another customer is simply not found here, so Acme's credentials do
-    // nothing on Bolt's portal — and the response cannot be used to discover
-    // that the account exists somewhere else.
-    const { rows } = await query(
-      `SELECT u.id, u.email, u.password_hash, u.status, t.status AS tenant_status
-         FROM users u JOIN tenants t ON t.id = u.tenant_id
-        WHERE u.email = $1 AND u.tenant_id = $2`,
-      [email, req.tenant.id],
-    );
+    // On a customer's own address the lookup is scoped to that customer, so
+    // Acme's credentials do nothing on Bolt's portal and the response cannot
+    // be used to discover that the account exists somewhere else.
+    //
+    // On the shared portal there is no such hostname to scope by, so the
+    // lookup is by email alone. That is unambiguous because an email belongs
+    // to exactly one user and therefore one customer — and the session that
+    // results still carries only that customer, so nobody sees anything new.
+    const { rows } = req.sharedPortal
+      ? await query(
+          `SELECT u.id, u.email, u.password_hash, u.status, t.status AS tenant_status
+             FROM users u JOIN tenants t ON t.id = u.tenant_id
+            WHERE u.email = $1`,
+          [email])
+      : await query(
+          `SELECT u.id, u.email, u.password_hash, u.status, t.status AS tenant_status
+             FROM users u JOIN tenants t ON t.id = u.tenant_id
+            WHERE u.email = $1 AND u.tenant_id = $2`,
+          [email, req.tenant.id]);
     const user = rows[0];
 
     // Always run a verify, even with no such user, so response time does not
