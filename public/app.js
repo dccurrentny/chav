@@ -166,7 +166,7 @@
           '<div><div class="brandname">' + h(b.name) + '</div>' +
           '<div class="brandsub">Phone settings</div></div>' +
           '<div class="grow"></div>' +
-          '<div class="whoami"><b>' + h(me.email) + '</b>' +
+          '<div class="whoami"><b>' + h(me.email || 'Support') + '</b>' +
             (me.role === 'admin' ? 'Can make changes' : 'View only') + '</div>' +
           '<button class="btn-ghost btn-sm" id="signOut">Sign out</button>' +
         '</div>' +
@@ -174,7 +174,7 @@
         '<h1>Where your calls go</h1>' +
         '<p class="lede">These are the forwarding rules on your main line. ' +
           (me.impersonation
-            ? 'You are looking at this account as support, so nothing here can be changed.'
+            ? 'You are in this account as support. Changes you make are recorded against your name.'
             : me.role === 'admin'
               ? 'Changes take effect on your phone system straight away.'
               : 'Your account can view these but not change them — ask an administrator on your account.') +
@@ -209,10 +209,16 @@
     var bar = document.createElement('div');
     bar.className = 'supportbar';
     bar.setAttribute('role', 'status');
+    // Says plainly that changes are possible and who they will be recorded
+    // against. A banner claiming "read only" while writes went through would
+    // be worse than no banner.
+    var who = imp.preview
+      ? 'no customer account &mdash; setup preview'
+      : 'signed in as ' + h(state.me.email);
     bar.innerHTML =
       '<span class="dot" aria-hidden="true"></span>' +
-      '<span>Support view &mdash; <b>' + h(imp.by) + '</b> is viewing this account as ' +
-        h(state.me.email) + '. <b>Read only.</b></span>' +
+      '<span>Support session &mdash; <b>' + h(imp.by) + '</b>, ' + who + '. ' +
+        '<b>Changes are logged as theirs.</b></span>' +
       '<span class="grow"></span>' +
       '<span class="left" id="sbLeft"></span>' +
       '<button type="button" id="sbExit">Leave support view</button>';
@@ -327,7 +333,8 @@
           var when = new Date(e.at);
           return '<tr>' +
             '<td class="num">' + h(when.toLocaleString()) + '</td>' +
-            '<td>' + h(e.actor_email || '—') + '</td>' +
+            '<td>' + h(e.actor_email || '—') +
+              (e.actor_kind === 'staff' ? ' <span style="opacity:.7">(support)</span>' : '') + '</td>' +
             '<td>' + h(describeOp(e)) + '</td>' +
             '<td class="r-' + h(e.result) + '">' + h(e.result === 'ok' ? 'Saved' : e.result === 'denied' ? 'Not allowed' : 'Failed') + '</td>' +
           '</tr>';

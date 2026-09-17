@@ -399,6 +399,44 @@ adminRouter.post('/users/:id/impersonate', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Open a customer's portal with no user behind it. For checking the setup
+// before the customer has any accounts — and for changing their routing when
+// there is nobody on their side who can yet.
+adminRouter.post('/tenants/:id/preview', requireOwner, async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      'SELECT id, name, hostname, status FROM tenants WHERE id = $1', [req.params.id]);
+    const tenant = rows[0];
+    if (!tenant) return res.status(404).json({ error: 'not_found', message: 'No such customer.' });
+    if (tenant.status !== 'active') {
+      return res.status(409).json({ error: 'conflict', message: 'That customer is suspended.' });
+    }
+
+    const host = tenant.hostname || config.SHARED_PORTAL_HOSTNAME;
+    if (!host) {
+      return res.status(409).json({
+        error: 'conflict',
+        message: 'There is nowhere to open this. Give the customer a portal address, ' +
+                 'or set SHARED_PORTAL_HOSTNAME so they can use the shared portal.',
+      });
+    }
+
+    const token = await createGrant({
+      previewTenantId: tenant.id, staffId: req.staff.staff_id, ip: req.ip,
+    });
+
+    await log(req, {
+      tenantId: tenant.id, op: 'staff.preview.start', target: tenant.name, result: 'ok',
+    });
+
+    res.json({
+      url: impersonationUrl(host, token),
+      tenant: tenant.name,
+      minutes: IMPERSONATION_TTL_MINUTES,
+    });
+  } catch (err) { next(err); }
+});
+
 /* ----------------------------------------------------------------- audit */
 
 adminRouter.get('/audit', async (req, res, next) => {

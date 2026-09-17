@@ -120,11 +120,14 @@ authRouter.post('/logout', async (req, res, next) => {
 
 // The SPA calls this on boot to learn who it is and to pick up the CSRF token.
 authRouter.get('/me', requireAuth, (req, res) => {
-  const impersonated = Boolean(req.session.impersonated_by);
+  const staff = Boolean(req.session.impersonated_by);
+  const preview = Boolean(req.session.preview_tenant_id);
   res.json({
-    email: req.session.email,
-    // A support view is read-only whatever the account's own role says.
-    role: impersonated ? 'member' : req.session.role,
+    // A preview has no account behind it, so there is no email to show.
+    email: req.session.email ?? null,
+    // An operator carries their own authority here: they can change any of
+    // this from the console anyway, and every change is recorded as theirs.
+    role: staff ? 'admin' : req.session.role,
     tenant: {
       name: req.session.tenant_name,
       domain: req.session.ns_domain,
@@ -133,8 +136,14 @@ authRouter.get('/me', requireAuth, (req, res) => {
       mainExtension: req.session.main_extension || null,
     },
     csrfToken: req.session.csrf_secret,
-    impersonation: impersonated
-      ? { by: req.session.staff_email, expiresAt: req.session.expires_at }
+    impersonation: staff
+      ? {
+          by: req.session.staff_email,
+          expiresAt: req.session.expires_at,
+          preview,
+          // Changes are permitted and are logged against the operator.
+          canWrite: true,
+        }
       : null,
   });
 });

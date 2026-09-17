@@ -27,22 +27,27 @@ export async function createSession(userId, { ip, userAgent }) {
 export async function loadSession(token) {
   if (!token) return null;
   const { rows } = await query(
+    // A preview session has no user: it names the tenant directly, so the
+    // tenant is joined through whichever of the two is set.
     `SELECT s.token_hash, s.csrf_secret, s.expires_at, s.impersonated_by,
+            s.preview_tenant_id,
             u.id AS user_id, u.email, u.role, u.status AS user_status,
             t.id AS tenant_id, t.ns_domain, t.name AS tenant_name, t.status AS tenant_status,
             t.main_extension,
             st.email AS staff_email
        FROM sessions s
-       JOIN users   u  ON u.id = s.user_id
-       JOIN tenants t  ON t.id = u.tenant_id
-       LEFT JOIN staff st ON st.id = s.impersonated_by
+       LEFT JOIN users   u  ON u.id = s.user_id
+       JOIN      tenants t  ON t.id = COALESCE(u.tenant_id, s.preview_tenant_id)
+       LEFT JOIN staff   st ON st.id = s.impersonated_by
       WHERE s.token_hash = $1 AND s.expires_at > now()`,
     [hashToken(token)],
   );
   const row = rows[0];
   if (!row) return null;
   // A user disabled or a tenant suspended mid-session loses access at once.
-  if (row.user_status !== 'active' || row.tenant_status !== 'active') return null;
+  // A preview session has no user, so only the tenant applies.
+  if (row.tenant_status !== 'active') return null;
+  if (row.user_id && row.user_status !== 'active') return null;
   return row;
 }
 

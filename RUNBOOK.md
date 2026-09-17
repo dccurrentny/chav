@@ -85,6 +85,25 @@ node scripts/create-operator.js --email you@dccurrentny.com --name "Your Name" -
 Changing it means re-running `provision.sh`, which re-renders the Caddyfile.
 Leave it blank and no console is served at all.
 
+### Opening a customer's portal as support
+
+Two ways in, both from **Customers**:
+
+- **Open portal** — the customer's portal with no account behind it. For
+  checking the setup before they have any users, and for configuring them when
+  nobody on their side can yet.
+- **Users → View as** — the portal as a particular person sees it, for
+  answering "what am I looking at" questions.
+
+Both can change things, and both are recorded against **you**: `actor_kind`
+staff, your email, in that customer's own activity list. It never reads as the
+customer having made the change, which is the only thing that made this worth
+worrying about. They can see that you were in their account, which is
+deliberate.
+
+Both end by themselves after 30 minutes, and the link that opens them is
+single-use and expires in 60 seconds.
+
 ### Viewing a customer's portal
 
 In the console, open a customer's **Users** and press **View as**. A read-only

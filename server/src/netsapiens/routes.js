@@ -5,7 +5,7 @@ import { getOperation, OPERATION_NAMES } from './allowlist.js';
 import { nsRequest, NsError } from './client.js';
 import { telcoRequest } from '../telco/client.js';
 import { requireAuth, requireCsrf } from '../auth/middleware.js';
-import { refuseImpersonatedOperation } from '../admin/impersonate.js';
+import { actorFor } from '../admin/impersonate.js';
 import * as audit from '../audit.js';
 import { logger } from '../logger.js';
 
@@ -43,16 +43,16 @@ nsRouter.post('/:operation', writeLimiter, async (req, res, next) => {
     return res.status(404).json({ error: 'unknown_operation', message: `No such operation: ${name}` });
   }
 
-  // A support view may read everything and change nothing. This has to key
-  // off the operation, not the HTTP method: reads are POSTs here too, and a
-  // method check would block the very thing support needs to do.
-  if (op.write && s.impersonated_by) {
-    return refuseImpersonatedOperation(req, res, name);
-  }
+  // An operator acting inside a customer's portal carries their own authority:
+  // they can already change any of this from the console, so a support session
+  // is not an escalation. It is attributed to them, not to the customer.
+  const actor = actorFor(s);
+  const isStaff = actor.actorKind === 'staff';
 
-  if (op.role === 'admin' && s.role !== 'admin') {
+  if (op.role === 'admin' && !isStaff && s.role !== 'admin') {
     await audit.record({
-      tenantId: s.tenant_id, userId: s.user_id, actorEmail: s.email, nsDomain: s.ns_domain,
+      ...actor,
+      tenantId: s.tenant_id, nsDomain: s.ns_domain,
       op: name, result: 'denied', error: 'role', ip: req.ip,
     });
     return res.status(403).json({
@@ -113,7 +113,8 @@ nsRouter.post('/:operation', writeLimiter, async (req, res, next) => {
     }
 
     await audit.record({
-      tenantId: s.tenant_id, userId: s.user_id, actorEmail: s.email, nsDomain: s.ns_domain,
+      ...actor,
+      tenantId: s.tenant_id, nsDomain: s.ns_domain,
       op: name, target, params: parsed.data, before, after,
       result: 'ok', durationMs, dedupeKey, ip: req.ip,
     });
@@ -122,7 +123,8 @@ nsRouter.post('/:operation', writeLimiter, async (req, res, next) => {
   } catch (err) {
     if (err instanceof NsError) {
       await audit.record({
-        tenantId: s.tenant_id, userId: s.user_id, actorEmail: s.email, nsDomain: s.ns_domain,
+        ...actor,
+        tenantId: s.tenant_id, nsDomain: s.ns_domain,
         op: name, target, params: parsed.data,
         result: 'error', error: err.message, durationMs: err.durationMs ?? null, ip: req.ip,
       });

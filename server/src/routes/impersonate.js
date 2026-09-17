@@ -29,6 +29,7 @@ impersonateRouter.get('/__impersonate', requireTenant, async (req, res, next) =>
 
     const { token, expiresAt } = await createImpersonatedSession({
       userId: grant.user_id,
+      previewTenantId: grant.preview_tenant_id,
       staffId: grant.staff_id,
       ip: req.ip,
       userAgent: req.get('user-agent'),
@@ -39,7 +40,8 @@ impersonateRouter.get('/__impersonate', requireTenant, async (req, res, next) =>
       actorKind: 'staff', staffId: grant.staff_id,
       // Name the operator, so the customer's own history says who looked.
       actorEmail: grant.staff_email,
-      op: 'impersonation.begin', result: 'ok', ip: req.ip,
+      op: grant.preview_tenant_id ? 'impersonation.preview' : 'impersonation.begin',
+      result: 'ok', ip: req.ip,
       after: { expiresAt },
     });
 

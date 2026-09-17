@@ -240,6 +240,11 @@
           tenantForm(state.tenants.find(function (t) { return t.id === b.dataset.edit; }));
         });
       });
+      panel().querySelectorAll('[data-preview]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          openPreview(state.tenants.find(function (x) { return x.id === b.dataset.preview; }));
+        });
+      });
       panel().querySelectorAll('[data-users]').forEach(function (b) {
         b.addEventListener('click', function () {
           usersModal(state.tenants.find(function (t) { return t.id === b.dataset.users; }));
@@ -273,12 +278,33 @@
       '<td class="num">' + h(when(t.last_activity)) + '</td>' +
       '<td>' + pill(t.status) + '</td>' +
       '<td class="actions">' +
+        '<button class="btn-ghost" data-preview="' + h(t.id) + '">Open portal</button>' +
         '<button class="btn-ghost" data-users="' + h(t.id) + '">Users</button>' +
         '<button class="btn-ghost" data-edit="' + h(t.id) + '">Edit</button>' +
         '<button class="' + (t.status === 'active' ? 'btn-danger' : 'btn-ghost') +
           '" data-status="' + h(t.id) + '" data-to="' + flip + '">' +
           (t.status === 'active' ? 'Suspend' : 'Reactivate') + '</button>' +
       '</td></tr>';
+  }
+
+  // Open a customer's portal with no account behind it — for checking the
+  // setup, and for configuring them before they have any users.
+  async function openPreview(t) {
+    if (!confirm('Open ' + t.name + "'s portal as support?\n\n" +
+                 'You will see what they see, and you can make changes. ' +
+                 'Everything you do is recorded against your name in their activity log.')) return;
+    try {
+      var out = await api('/tenants/' + t.id + '/preview', { method: 'POST' });
+      window.open(out.url, '_blank', 'noopener');
+      modal('Portal opened', out.tenant,
+        '<p class="sub" style="margin-bottom:14px">' + h(out.tenant) +
+        "'s portal opened in a new tab, signed in as support. It ends by itself after " +
+        h(out.minutes) + ' minutes. Any change you make there is logged as yours.</p>' +
+        '<div class="row-end"><button class="btn" id="mc">Done</button></div>',
+        function (v) { v.querySelector('#mc').addEventListener('click', closeModal); });
+    } catch (err) {
+      alert(err.message);
+    }
   }
 
   function tenantForm(t) {

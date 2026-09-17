@@ -19,12 +19,17 @@ function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
-export async function createGrant({ userId, staffId, ip }) {
+/**
+ * Mint a grant for either a user or, when a customer has no accounts yet, the
+ * tenant itself. Exactly one of userId and previewTenantId is given.
+ */
+export async function createGrant({ userId = null, previewTenantId = null, staffId, ip }) {
   const token = crypto.randomBytes(32).toString('base64url');
   await query(
-    `INSERT INTO impersonation_grants (token_hash, user_id, staff_id, expires_at, ip)
-     VALUES ($1,$2,$3, now() + ($4 || ' seconds')::interval, $5)`,
-    [hashToken(token), userId, staffId, String(GRANT_TTL_SECONDS), ip ?? null],
+    `INSERT INTO impersonation_grants
+       (token_hash, user_id, preview_tenant_id, staff_id, expires_at, ip)
+     VALUES ($1,$2,$3,$4, now() + ($5 || ' seconds')::interval, $6)`,
+    [hashToken(token), userId, previewTenantId, staffId, String(GRANT_TTL_SECONDS), ip ?? null],
   );
   return token;
 }
@@ -49,28 +54,38 @@ export async function redeemGrant(token, tenantId = null) {
       WHERE g.token_hash = $1
         AND g.used_at IS NULL
         AND g.expires_at > now()
-        AND EXISTS (
-          SELECT 1 FROM users u
-           WHERE u.id = g.user_id AND u.status = 'active'
-             AND ($2::uuid IS NULL OR u.tenant_id = $2)
+        AND (
+          -- Either the named user is still usable and in scope for this
+          -- hostname, or it is a tenant preview with no user at all.
+          (g.user_id IS NOT NULL AND EXISTS (
+             SELECT 1 FROM users u
+              WHERE u.id = g.user_id AND u.status = 'active'
+                AND ($2::uuid IS NULL OR u.tenant_id = $2)))
+          OR
+          (g.preview_tenant_id IS NOT NULL
+             AND ($2::uuid IS NULL OR g.preview_tenant_id = $2))
         )
-      RETURNING g.user_id, g.staff_id,
-                (SELECT tenant_id FROM users WHERE id = g.user_id) AS tenant_id,
+      RETURNING g.user_id, g.preview_tenant_id, g.staff_id,
+                COALESCE(
+                  (SELECT tenant_id FROM users WHERE id = g.user_id),
+                  g.preview_tenant_id) AS tenant_id,
                 (SELECT email FROM staff WHERE id = g.staff_id) AS staff_email`,
     [hashToken(token), tenantId],
   );
   return rows[0] ?? null;
 }
 
-export async function createImpersonatedSession({ userId, staffId, ip, userAgent }) {
+export async function createImpersonatedSession({ userId = null, previewTenantId = null,
+                                                   staffId, ip, userAgent }) {
   const token = crypto.randomBytes(32).toString('base64url');
   const csrfSecret = crypto.randomBytes(32).toString('base64url');
   const expiresAt = new Date(Date.now() + IMPERSONATION_TTL_MINUTES * 60 * 1000);
 
   await query(
-    `INSERT INTO sessions (token_hash, user_id, csrf_secret, expires_at, ip, user_agent, impersonated_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [hashToken(token), userId, csrfSecret, expiresAt, ip ?? null,
+    `INSERT INTO sessions
+       (token_hash, user_id, preview_tenant_id, csrf_secret, expires_at, ip, user_agent, impersonated_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [hashToken(token), userId, previewTenantId, csrfSecret, expiresAt, ip ?? null,
      userAgent?.slice(0, 500) ?? null, staffId],
   );
   return { token, expiresAt };
@@ -83,30 +98,36 @@ export async function purgeExpiredGrants() {
 }
 
 /**
- * Refuse a state-changing operation attempted from a support view.
+ * How a change made from a support session is attributed.
  *
- * Called by the caller that knows whether the operation writes — NOT as
- * blanket middleware. Every SkySwitch operation is a POST, reads included, so
- * a method-based guard would block reads and leave support unable to see
- * anything, which is the entire point of the feature.
+ * Support sessions were read-only at first, on the reasoning that an
+ * impersonated write would record the customer making a change they did not
+ * make. The answer to that is attribution, not refusal: an operator setting a
+ * customer up has to be able to configure them, and a customer with no
+ * accounts yet has nobody else who can.
+ *
+ * So the write is allowed and recorded as the OPERATOR — actor_kind 'staff',
+ * their staff id, their email — in the customer's own activity list. It never
+ * reads as the customer having done it, which was the only thing that made
+ * this dangerous.
  */
-export function refuseImpersonatedOperation(req, res, opName) {
-  audit.record({
-    tenantId: req.session.tenant_id,
-    userId: req.session.user_id,
-    actorKind: 'staff',
-    staffId: req.session.impersonated_by,
-    actorEmail: req.session.email,
-    op: 'impersonation.write_refused',
-    target: opName,
-    result: 'denied',
-    ip: req.ip,
-  }).catch(() => {});
-
-  return res.status(403).json({
-    error: 'impersonation_read_only',
-    message: 'You are viewing this account as support. Leave support view to make changes.',
-  });
+export function actorFor(session) {
+  if (session?.impersonated_by) {
+    return {
+      actorKind: 'staff',
+      staffId: session.impersonated_by,
+      actorEmail: session.staff_email,
+      // Recorded so the row says which account was acted on, even in a
+      // preview where there is no user to name.
+      userId: session.user_id ?? null,
+    };
+  }
+  return {
+    actorKind: 'customer',
+    staffId: null,
+    actorEmail: session.email,
+    userId: session.user_id,
+  };
 }
 
 export function impersonationUrl(hostname, token) {

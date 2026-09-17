@@ -11,7 +11,7 @@ process.env.NS_PASSWORD      ??= 'x';
 process.env.LOG_LEVEL        ??= 'fatal';
 
 const { OPERATIONS } = await import('../src/netsapiens/allowlist.js');
-const { refuseImpersonatedOperation, IMPERSONATION_TTL_MINUTES, impersonationUrl } =
+const { actorFor, IMPERSONATION_TTL_MINUTES, impersonationUrl } =
   await import('../src/admin/impersonate.js');
 
 function mockRes() {
@@ -23,11 +23,39 @@ function mockRes() {
 }
 const mockReq = { session: { tenant_id: 't', user_id: 'u', impersonated_by: 's', email: 'x@y.z' }, ip: '127.0.0.1' };
 
-test('a refused support write returns 403 with its own error code', () => {
-  const res = mockRes();
-  refuseImpersonatedOperation(mockReq, res, 'answerrule.update');
-  assert.equal(res.statusCode, 403);
-  assert.equal(res.body.error, 'impersonation_read_only');
+// Support sessions may now change things — an operator setting a customer up
+// has to be able to, and a customer with no accounts has nobody else who can.
+// What must never happen is the change reading as the CUSTOMER's.
+test('a change made from a support session is attributed to the operator', () => {
+  const actor = actorFor({
+    impersonated_by: 'staff-id', staff_email: 'aron@dccurrentny.com',
+    user_id: 'user-id', email: 'owner@acme.com',
+  });
+  assert.equal(actor.actorKind, 'staff');
+  assert.equal(actor.staffId, 'staff-id');
+  assert.equal(actor.actorEmail, 'aron@dccurrentny.com',
+    'the audit row would name the customer rather than the operator');
+  // The account acted on is still recorded.
+  assert.equal(actor.userId, 'user-id');
+});
+
+test('a preview session is attributed to the operator with no user', () => {
+  const actor = actorFor({
+    impersonated_by: 'staff-id', staff_email: 'aron@dccurrentny.com',
+    user_id: null, email: null,
+  });
+  assert.equal(actor.actorKind, 'staff');
+  assert.equal(actor.actorEmail, 'aron@dccurrentny.com');
+  assert.equal(actor.userId, null);
+});
+
+test("a customer's own change is never attributed to staff", () => {
+  const actor = actorFor({
+    impersonated_by: null, user_id: 'user-id', email: 'owner@acme.com',
+  });
+  assert.equal(actor.actorKind, 'customer');
+  assert.equal(actor.staffId, null);
+  assert.equal(actor.actorEmail, 'owner@acme.com');
 });
 
 // Regression: the guard was originally middleware keyed on the HTTP method.
