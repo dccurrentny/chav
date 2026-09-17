@@ -47,7 +47,12 @@
 /* A class like .boot{display:flex} outbeats the UA's [hidden] rule, so state
    it explicitly — otherwise el.hidden = true silently does nothing. */
 [hidden]{display:none!important;}
-html,body{height:100%;}
+/* min-height, not height: a body fixed at one viewport is the containing block
+   for the sticky support bar, which would then unstick the moment you scrolled
+   past the first screen. Nothing here needs body to stop at 100% — the screens
+   that want the full height ask for it in vh. */
+html{height:100%;}
+body{min-height:100%;}
 body{
   margin:0;background:var(--bg);color:var(--text);
   font-family:var(--sans);font-size:15px;line-height:1.55;
@@ -191,13 +196,22 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
    customer looking over their shoulder should see it too. Fixed to the top,
    in a colour that belongs to no tenant's brand. */
 .supportbar{
-  position:fixed;top:0;left:0;right:0;z-index:60;
+  /* Sticky, not fixed. A fixed bar needs the body padded by its height, and
+     its height depends on how the sentence wraps — which on a phone is three
+     lines, not the one the constant assumed, so it sat on top of the header.
+     Sticky takes up its own space and stays pinned, so there is no height to
+     guess at. */
+  position:sticky;top:0;z-index:60;
   background:#8A2B22;color:#FFF3F1;
-  padding:8px 16px;
-  padding-top:calc(8px + env(safe-area-inset-top, 0px));
-  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
-  font-size:13px;font-weight:500;
+  padding:9px 16px;
+  padding-top:calc(9px + env(safe-area-inset-top, 0px));
+  display:grid;grid-template-columns:auto 1fr auto;
+  align-items:center;column-gap:11px;
+  font-size:13px;font-weight:500;line-height:1.45;
   box-shadow:0 2px 12px rgba(0,0,0,.28);
+}
+.supportbar .sb-actions{
+  display:flex;align-items:center;gap:11px;justify-self:end;
 }
 .supportbar .dot{
   width:8px;height:8px;border-radius:50%;background:#FF8A7A;flex-shrink:0;
@@ -205,16 +219,29 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
 }
 @keyframes sb{50%{opacity:.35;}}
 .supportbar b{font-weight:700;}
-.supportbar .grow{flex:1 1 auto;}
-.supportbar .left{font-family:var(--mono);font-size:12px;opacity:.9;}
+.supportbar .left{
+  font-family:var(--mono);font-size:12px;opacity:.9;white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
 .supportbar button{
   background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.4);
   color:#FFF3F1;border-radius:7px;padding:5px 12px;font-size:12.5px;font-weight:600;
   font-family:inherit;cursor:pointer;
 }
 .supportbar button:hover{background:rgba(255,255,255,.24);}
-body.supporting{padding-top:52px;}
-@media (max-width:520px){ body.supporting{padding-top:76px;} }
+
+/* On a phone the sentence needs the full width, so the clock and the way out
+   get their own line underneath rather than being squeezed beside it. */
+@media (max-width:640px){
+  .supportbar{grid-template-columns:auto 1fr;row-gap:8px;}
+  .supportbar .sb-actions{
+    grid-column:1 / -1;justify-self:stretch;justify-content:space-between;
+  }
+  .supportbar button{padding:6px 14px;}
+  /* Centred against a sentence that wraps to three lines, the dot lands
+     beside the middle one and reads as a bullet. Keep it on the first. */
+  .supportbar .dot{align-self:start;margin-top:5px;}
+}
 
 /* ---------- dispatch schedule ---------- */
 .sched-head{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px;}

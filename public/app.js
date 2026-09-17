@@ -264,9 +264,8 @@
   function renderSupportBar(imp) {
     var existing = document.querySelector('.supportbar');
     if (existing) existing.remove();
-    if (!imp) { document.body.classList.remove('supporting'); return; }
+    if (!imp) return;
 
-    document.body.classList.add('supporting');
     var bar = document.createElement('div');
     bar.className = 'supportbar';
     bar.setAttribute('role', 'status');
@@ -280,9 +279,10 @@
       '<span class="dot" aria-hidden="true"></span>' +
       '<span>Support session &mdash; <b>' + h(imp.by) + '</b>, ' + who + '. ' +
         '<b>Changes are logged as theirs.</b></span>' +
-      '<span class="grow"></span>' +
-      '<span class="left" id="sbLeft"></span>' +
-      '<button type="button" id="sbExit">Leave support view</button>';
+      '<span class="sb-actions">' +
+        '<span class="left" id="sbLeft"></span>' +
+        '<button type="button" id="sbExit">Leave support view</button>' +
+      '</span>';
     document.body.insertBefore(bar, document.body.firstChild);
 
     document.getElementById('sbExit').addEventListener('click', onSignOut);
