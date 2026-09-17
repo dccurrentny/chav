@@ -240,6 +240,11 @@
           tenantForm(state.tenants.find(function (t) { return t.id === b.dataset.edit; }));
         });
       });
+      panel().querySelectorAll('[data-api]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          credentialsModal(state.tenants.find(function (x) { return x.id === b.dataset.api; }));
+        });
+      });
       panel().querySelectorAll('[data-preview]').forEach(function (b) {
         b.addEventListener('click', function () {
           openPreview(state.tenants.find(function (x) { return x.id === b.dataset.preview; }));
@@ -278,6 +283,7 @@
       '<td class="num">' + h(when(t.last_activity)) + '</td>' +
       '<td>' + pill(t.status) + '</td>' +
       '<td class="actions">' +
+        '<button class="btn-ghost" data-api="' + h(t.id) + '">API access</button>' +
         '<button class="btn-ghost" data-preview="' + h(t.id) + '">Open portal</button>' +
         '<button class="btn-ghost" data-users="' + h(t.id) + '">Users</button>' +
         '<button class="btn-ghost" data-edit="' + h(t.id) + '">Edit</button>' +
@@ -285,6 +291,154 @@
           '" data-status="' + h(t.id) + '" data-to="' + flip + '">' +
           (t.status === 'active' ? 'Suspend' : 'Reactivate') + '</button>' +
       '</td></tr>';
+  }
+
+  // The five PBX fields, per customer. Same names as the shared connection.
+  var TENANT_CRED_FIELDS = [
+    ['NS_BASE_URL',      'Base address',  'https://portal.yourcompany.com', false],
+    ['NS_CLIENT_ID',     'Client ID',     '',  false],
+    ['NS_CLIENT_SECRET', 'Client secret', '',  true],
+    ['NS_USERNAME',      'API username',  '2001@acme.23763.service',  false],
+    ['NS_PASSWORD',      'API password',  '',  true],
+  ];
+
+  // A customer can hold its own SkySwitch subscriber. Where it does, SkySwitch
+  // enforces the boundary itself and no reseller-scoped credential is needed
+  // anywhere on the server.
+  async function credentialsModal(t) {
+    modal('API access — ' + t.name, t.ns_domain,
+      '<div class="empty">Loading…</div>', null, { wide: true });
+    try {
+      var d = await api('/tenants/' + t.id + '/credentials');
+      var body =
+        (d.inUse
+          ? '<div class="alert alert-ok">Using this customer&rsquo;s own credentials.</div>'
+          : d.incomplete
+            ? '<div class="alert alert-err">Set to its own credentials, but ' +
+              h(d.missing.join(', ')) + ' ' + (d.missing.length === 1 ? 'is' : 'are') +
+              ' missing. This customer cannot reach SkySwitch until they are filled in &mdash; ' +
+              'it will not quietly use the reseller credentials instead.</div>'
+            : '<div class="alert alert-warn">Using the shared reseller credentials from System.</div>') +
+        '<div class="alert form-err" hidden></div>' +
+
+        '<div class="field"><label for="tc_mode">Which credentials</label>' +
+          '<select id="tc_mode">' +
+            '<option value="shared"' + (d.mode === 'shared' ? ' selected' : '') + '>' +
+              'Shared &mdash; the reseller credentials in System</option>' +
+            '<option value="own"' + (d.mode === 'own' ? ' selected' : '') + '>' +
+              'Local &mdash; this customer&rsquo;s own subscriber</option>' +
+          '</select>' +
+          '<div style="font-size:11.5px;color:var(--muted);margin-top:5px">' +
+          'Local is tighter: a subscriber scoped to <b>' + h(t.ns_domain) + '</b> is enough &mdash; ' +
+          'Office Manager, not Reseller &mdash; and then SkySwitch itself refuses anything ' +
+          'outside this customer, rather than this application being the only thing that does. ' +
+          'No reseller credential is needed anywhere if every customer is local.</div></div>' +
+        TENANT_CRED_FIELDS.map(function (f) {
+          var key = f[0], label = f[1], ph = f[2], secret = f[3];
+          var info = (d.keys && d.keys[key]) || {};
+          return '<div class="field">' +
+            '<label for="tc_' + key + '">' + h(label) +
+              ' <span style="opacity:.6;font-weight:400">&mdash; ' +
+              (info.set ? 'set' : 'not set') + '</span></label>' +
+            '<input id="tc_' + key + '" type="' + (secret ? 'password' : 'text') + '" ' +
+              'autocomplete="new-password" placeholder="' +
+              h(secret && info.set ? '•••••••• (leave blank to keep)' : ph) + '" ' +
+              'value="' + h(secret ? '' : (info.value || '')) + '">' +
+          '</div>';
+        }).join('') +
+        '<div class="row-end">' +
+          '<button class="btn-danger" id="tcClear">Clear and use shared</button>' +
+          '<button class="btn-ghost" id="tcTest">Test connection</button>' +
+          '<button class="btn" id="tcSave">Save</button>' +
+        '</div>' +
+        '<div id="tcResult" style="margin-top:12px"></div>';
+
+      modal('API access — ' + t.name, t.ns_domain, body, function (veil) {
+        veil.querySelector('#tcSave').addEventListener('click', function () { saveTenantCreds(t); });
+        veil.querySelector('#tcTest').addEventListener('click', function () { testTenantCreds(t); });
+        veil.querySelector('#tcClear').addEventListener('click', function () { clearTenantCreds(t); });
+      }, { wide: true });
+    } catch (err) {
+      modal('API access — ' + t.name, t.ns_domain,
+        '<div class="alert alert-err">' + h(err.message) + '</div>' +
+        '<div class="row-end"><button class="btn" id="mc">Close</button></div>',
+        function (v) { v.querySelector('#mc').addEventListener('click', closeModal); }, { wide: true });
+    }
+  }
+
+  function tenantCredValues() {
+    var body = {};
+    var mode = document.getElementById('tc_mode');
+    if (mode) body.mode = mode.value;
+    TENANT_CRED_FIELDS.forEach(function (f) {
+      var el = document.getElementById('tc_' + f[0]);
+      if (!el) return;
+      var v = el.value.trim();
+      // Blank secret means keep the stored one, so do not send the key at all.
+      if (f[3] && v === '') return;
+      body[f[0]] = v;
+    });
+    return body;
+  }
+
+  async function saveTenantCreds(t) {
+    var btn = document.getElementById('tcSave');
+    var out = document.getElementById('tcResult');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      await api('/tenants/' + t.id + '/credentials', { method: 'PUT', body: tenantCredValues() });
+      out.innerHTML = '<div class="alert alert-ok">Saved. Testing…</div>';
+      await testTenantCreds(t);
+    } catch (err) {
+      out.innerHTML = '<div class="alert alert-err">' + h(err.message) + '</div>';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save';
+    }
+  }
+
+  async function testTenantCreds(t) {
+    var btn = document.getElementById('tcTest');
+    var out = document.getElementById('tcResult');
+    if (btn) { btn.disabled = true; btn.textContent = 'Testing…'; }
+    try {
+      var r = await api('/tenants/' + t.id + '/credentials/test', { method: 'POST' });
+      if (r.ok) {
+        // The scope is the thing worth reading back: it says how far these
+        // credentials reach, which is the whole reason for setting them here.
+        var scopeNote = r.scope
+          ? '<br><span style="opacity:.8">Scope <b>' + h(r.scope) + '</b>' +
+            (r.domain ? ' on ' + h(r.domain) : '') + '.' +
+            (r.scope === 'Reseller'
+              ? ' That reaches every domain under your reseller — an Office Manager ' +
+                'subscriber for this customer alone would be tighter.'
+              : '') + '</span>'
+          : '';
+        out.innerHTML = '<div class="alert alert-ok">Connected. ' + h(r.detail || '') + scopeNote + '</div>';
+      } else {
+        out.innerHTML = '<div class="alert alert-err">' +
+          (r.reason === 'not_configured'
+            ? 'Not set up — still missing: ' + h((r.missing || []).join(', '))
+            : h(r.detail || 'SkySwitch refused the connection.')) + '</div>';
+      }
+    } catch (err) {
+      out.innerHTML = '<div class="alert alert-err">' + h(err.message) + '</div>';
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Test connection'; }
+    }
+  }
+
+  async function clearTenantCreds(t) {
+    if (!confirm('Remove ' + t.name + "'s own credentials?\n\n" +
+                 'They will fall back to the shared credentials in System.')) return;
+    var body = { mode: 'shared' };
+    TENANT_CRED_FIELDS.forEach(function (f) { body[f[0]] = null; });
+    try {
+      await api('/tenants/' + t.id + '/credentials', { method: 'PUT', body: body });
+      credentialsModal(t);
+    } catch (err) {
+      document.getElementById('tcResult').innerHTML =
+        '<div class="alert alert-err">' + h(err.message) + '</div>';
+    }
   }
 
   // Open a customer's portal with no account behind it — for checking the

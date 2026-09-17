@@ -11,7 +11,7 @@ import { createGrant, impersonationUrl, IMPERSONATION_TTL_MINUTES } from './impe
 import {
   describeNsSettings, describeTelcoSettings, setSettings,
   getNsSettings, getTelcoSettings, PBX_KEYS, TELCO_KEYS,
-  describeTenantNsSettings, setTenantSettings,
+  describeTenantNsSettings, setTenantSettings, setTenantCredentialMode,
 } from '../settings.js';
 import { testConnection, _resetTokenCache } from '../netsapiens/client.js';
 import { testTelcoConnection, _resetTelcoToken, AUTH_STYLES, TELCO_SCOPES } from '../telco/client.js';
@@ -89,6 +89,7 @@ adminRouter.get('/tenants', async (_req, res, next) => {
   try {
     const { rows } = await query(
       `SELECT t.id, t.name, t.ns_domain, t.hostname, t.status, t.main_extension,
+              t.credential_mode,
               t.brand_name, t.brand_color, t.logo_url, t.support_email, t.support_phone,
               t.created_at,
               (SELECT count(*) FROM users u WHERE u.tenant_id = t.id AND u.status='active') AS user_count,
@@ -233,22 +234,26 @@ adminRouter.get('/tenants/:id/credentials', requireOwner, async (req, res, next)
 
 adminRouter.put('/tenants/:id/credentials', requireOwner, async (req, res, next) => {
   try {
-    const shape = {};
+    const shape = { mode: z.enum(['shared', 'own']).optional() };
     for (const key of PBX_KEYS) shape[key] = z.string().max(500).nullish();
     const parsed = z.object(shape).strict().safeParse(req.body ?? {});
     if (!parsed.success) return bad(res, parsed.error.issues);
 
+    const { mode, ...rest } = parsed.data;
     const entries = {};
-    for (const [k, v] of Object.entries(parsed.data)) if (v !== undefined) entries[k] = v;
-    if (!Object.keys(entries).length) {
+    for (const [k, v] of Object.entries(rest)) if (v !== undefined) entries[k] = v;
+    if (!Object.keys(entries).length && !mode) {
       return res.status(400).json({ error: 'invalid_input', message: 'Nothing to change.' });
     }
 
-    await setTenantSettings(req.params.id, entries, req.staff.staff_id);
+    if (mode) await setTenantCredentialMode(req.params.id, mode);
+    if (Object.keys(entries).length) {
+      await setTenantSettings(req.params.id, entries, req.staff.staff_id);
+    }
     _resetTokenCache();
     await log(req, {
       tenantId: req.params.id, op: 'staff.tenant.credentials',
-      params: { changed: Object.keys(entries) }, result: 'ok',
+      params: { changed: Object.keys(entries), ...(mode ? { mode } : {}) }, result: 'ok',
     });
     res.json({ ok: true, ...(await describeTenantNsSettings(req.params.id)) });
   } catch (err) { next(err); }

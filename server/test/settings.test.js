@@ -63,3 +63,17 @@ test('every operation names the server it belongs to', async () => {
     }
   }
 });
+
+test('a customer set to its own credentials never falls back to the shared ones', async () => {
+  // The choice used to be inferred from whether the fields happened to be
+  // filled. That turns a half-finished local setup into a reseller-
+  // credentialled one, which is the opposite of what choosing local means.
+  const src = await import('node:fs/promises')
+    .then((fs) => fs.readFile(new URL('../src/settings.js', import.meta.url), 'utf8'));
+
+  assert.match(src, /if \(mode !== 'own'\) return getNsSettings\(\)/,
+    'the shared credentials are not gated on the stated mode');
+  // An incomplete 'own' set is reported as unset, not substituted.
+  assert.match(src, /Reported as unset rather than substituted/,
+    'an incomplete local set may still fall through to the shared credentials');
+});

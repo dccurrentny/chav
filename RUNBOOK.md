@@ -150,16 +150,21 @@ A SkySwitch token carries a scope, and the scope decides what it can reach:
 | Office Manager | that subscriber's domain |
 | Reseller | every domain under the reseller |
 
-Two deployments follow, and both are supported:
+Each customer states which it uses, in **Customers → API access**:
 
-- **One shared Reseller credential** (System tab). Simplest. The token *could*
+- **Shared** — the reseller credentials in System. Simplest. The token *could*
   reach any customer, so only this application keeps them apart.
-- **Per-customer credentials** (Customers → Edit). Each customer's own Office
-  Manager subscriber, so SkySwitch enforces the boundary as well. A bug in our
-  domain scoping cannot cross it.
+- **Local** — this customer's own subscriber. An Office Manager scoped to their
+  domain is enough, and then SkySwitch enforces the boundary as well: a bug in
+  our domain scoping cannot cross it.
 
-Per-customer wins where it matters. A customer with no credentials of its own
-falls back to the shared ones, so the two mix freely.
+If every customer is local, no reseller credential is needed anywhere on the
+server. That is the tighter arrangement and the one to prefer.
+
+The choice is stated, not inferred. A customer set to **local** with fields
+still missing cannot reach SkySwitch at all, and says so — it will not quietly
+use the reseller credentials instead, which is exactly what choosing local was
+meant to avoid.
 
 The server checks before every call that the token's scope covers the domain
 being asked about, and refuses otherwise — a request is never sent under

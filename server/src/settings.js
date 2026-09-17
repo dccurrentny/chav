@@ -85,22 +85,32 @@ export function invalidateTenantSettings(tenantId) {
 
 async function loadTenantStored(tenantId) {
   const hit = tenantCache.get(tenantId);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.values;
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit;
 
   const values = {};
+  let mode = 'shared';
   try {
-    const { rows } = await query(
-      'SELECT key, value_enc FROM tenant_settings WHERE tenant_id = $1', [tenantId]);
-    for (const row of rows) {
+    const [creds, tenant] = await Promise.all([
+      query('SELECT key, value_enc FROM tenant_settings WHERE tenant_id = $1', [tenantId]),
+      query('SELECT credential_mode FROM tenants WHERE id = $1', [tenantId]),
+    ]);
+    for (const row of creds.rows) {
       if (!PBX_KEYS.includes(row.key)) continue;
       try { values[row.key] = decrypt(row.value_enc); }
       catch { logger.error({ tenantId, key: row.key }, 'could not decrypt a tenant setting'); }
     }
+    mode = tenant.rows[0]?.credential_mode ?? 'shared';
   } catch (err) {
-    logger.error({ err: err.message, tenantId }, 'could not read tenant_settings');
+    logger.error({ err: err.message, tenantId }, 'could not read tenant credentials');
   }
-  tenantCache.set(tenantId, { at: Date.now(), values });
-  return values;
+  const entry = { at: Date.now(), values, mode };
+  tenantCache.set(tenantId, entry);
+  return entry;
+}
+
+export async function setTenantCredentialMode(tenantId, mode) {
+  await query('UPDATE tenants SET credential_mode = $2 WHERE id = $1', [tenantId, mode]);
+  invalidateTenantSettings(tenantId);
 }
 
 export async function setTenantSettings(tenantId, entries, staffId) {
@@ -126,29 +136,45 @@ export async function setTenantSettings(tenantId, entries, staffId) {
 /**
  * The PBX credentials to use for a tenant.
  *
- * A customer's own credentials win over the server-wide ones. Partial
- * overrides are deliberately not merged: mixing one customer's username with
- * another's client secret would be a confusing way to fail. Either a customer
- * has its own complete set or it uses the shared one.
+ * The choice is stated on the tenant, not inferred from whether fields happen
+ * to be filled in. A customer set to 'own' with an incomplete set is an error,
+ * not a quiet fallback: falling back would hand a customer deliberately kept
+ * off the reseller credential exactly that credential.
  */
 export async function getNsSettingsForTenant(tenantId) {
-  const own = tenantId ? await loadTenantStored(tenantId) : {};
-  const complete = PBX_KEYS.every((k) => own[k]);
-  if (complete) {
-    return Object.fromEntries(PBX_KEYS.map((k) => [k, { value: own[k], set: true, source: 'tenant' }]));
+  if (!tenantId) return getNsSettings();
+
+  const { values, mode } = await loadTenantStored(tenantId);
+  if (mode !== 'own') return getNsSettings();
+
+  const missing = PBX_KEYS.filter((k) => !values[k]);
+  if (missing.length) {
+    // Reported as unset rather than substituted, so the caller says so.
+    return Object.fromEntries(PBX_KEYS.map((k) => [k, {
+      value: values[k] ?? null, set: Boolean(values[k]), source: 'tenant',
+    }]));
   }
-  return getNsSettings();
+  return Object.fromEntries(PBX_KEYS.map((k) => [k, { value: values[k], set: true, source: 'tenant' }]));
 }
 
 /** Which per-customer keys are set, for the console. Never their values. */
 export async function describeTenantNsSettings(tenantId) {
-  const own = await loadTenantStored(tenantId);
-  const complete = PBX_KEYS.every((k) => own[k]);
-  const out = { complete, inUse: complete, keys: {} };
+  const { values, mode } = await loadTenantStored(tenantId);
+  const complete = PBX_KEYS.every((k) => values[k]);
+  const out = {
+    mode,
+    complete,
+    inUse: mode === 'own' && complete,
+    // Chosen 'own' but not finished: the customer cannot reach SkySwitch at
+    // all, which is the honest state and better than a silent reseller call.
+    incomplete: mode === 'own' && !complete,
+    missing: PBX_KEYS.filter((k) => !values[k]),
+    keys: {},
+  };
   for (const key of PBX_KEYS) {
     out.keys[key] = {
-      set: Boolean(own[key]),
-      value: SECRET_KEYS.includes(key) ? null : (own[key] ?? null),
+      set: Boolean(values[key]),
+      value: SECRET_KEYS.includes(key) ? null : (values[key] ?? null),
     };
   }
   return out;
