@@ -23,7 +23,10 @@ Then, in order:
 1. `sudo nano /etc/portal/portal.env` — fill in the five `NS_*` SkySwitch values.
 2. Point an A record for your portal hostname at the droplet IP.
 3. Set that hostname in `/etc/caddy/Caddyfile`, then `sudo systemctl reload caddy`.
-4. `cd /opt/chav/server && npm ci && npm run migrate`
+4. `set -a; . /etc/portal/db.env; set +a` then `cd /opt/chav/server && npm ci && npm run migrate`
+   (`DATABASE_URL` lives only in that file — systemd reads it via
+   `EnvironmentFile`, so a plain shell does not have it and the migration
+   exits with `DATABASE_URL is not set`.)
 5. `sudo systemctl start portal`
 6. Confirm: `curl -s https://<host>/readyz` → `{"ok":true,"db":"up"}`
 
@@ -386,11 +389,26 @@ Merging to `main` triggers `.github/workflows/deploy.yml`, which runs tests,
 pushes to the droplet over SSH, migrates, restarts, and **rolls back
 automatically** if `/readyz` does not come up within 30 seconds.
 
+**This pipeline is not live yet.** It needs three things that do not exist:
+a `deploy` user on the droplet with sudo rights for `systemctl restart portal`,
+the `DEPLOY_HOST` and `DEPLOY_SSH_KEY` repository secrets, and `deploy.yml`
+merged to `main`. Its migrate step also has the `DATABASE_URL` gap described
+below and needs the same fix once the deploy user exists — which sudo policy
+that user gets is the open question, so it is deliberately not guessed at here.
+Until all of that is done, every deploy is the manual one below.
+
 Manual deploy, if CI is unavailable:
 
 ```bash
 cd /opt/chav && git fetch origin main && git reset --hard origin/main
-cd server && npm ci --omit=dev && npm run migrate
+cd server && npm ci --omit=dev
+
+# migrate.js reads DATABASE_URL from the environment and nothing else. It is
+# only in /etc/portal/db.env, which systemd hands to the service but which a
+# shell does not have — without this line the migration exits immediately.
+set -a; . /etc/portal/db.env; set +a
+npm run migrate
+
 sudo systemctl restart portal && curl -s localhost:3000/readyz
 ```
 
