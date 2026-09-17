@@ -227,7 +227,7 @@
             '<button class="btn" id="addT">Add customer</button></div>' +
           (d.tenants.length ? '<div class="tscroll"><table>' +
             '<thead><tr><th>Customer</th><th>Web address</th><th>SkySwitch domain</th>' +
-            '<th>Users</th><th>Last activity</th><th>Status</th><th></th></tr></thead><tbody>' +
+            '<th>Ext</th><th>Users</th><th>Last activity</th><th>Status</th><th></th></tr></thead><tbody>' +
             d.tenants.map(tenantRow).join('') +
           '</tbody></table></div>' : '<div class="empty">No customers yet.</div>') +
         '</div>';
@@ -261,6 +261,9 @@
       '<td>' + sw + h(t.name) + '</td>' +
       '<td class="host">' + h(t.hostname || '—') + '</td>' +
       '<td class="host">' + h(t.ns_domain) + '</td>' +
+      '<td class="host">' + (t.main_extension
+        ? h(t.main_extension)
+        : '<span style="color:var(--warn)">not set</span>') + '</td>' +
       '<td class="num">' + h(t.user_count) + '</td>' +
       '<td class="num">' + h(when(t.last_activity)) + '</td>' +
       '<td>' + pill(t.status) + '</td>' +
@@ -286,8 +289,12 @@
       '<div class="field"><label for="f_host">Portal web address</label>' +
         '<input id="f_host" value="' + h(editing ? (t.hostname || '') : '') +
         '" placeholder="acme.portal.dccurrentny.com"></div>' +
-      '<div class="field"><label for="f_ns">SkySwitch domain</label>' +
-        '<input id="f_ns" value="' + h(editing ? t.ns_domain : '') + '" placeholder="acme.yourdomain.com"></div>' +
+      '<div class="grid2">' +
+        '<div class="field"><label for="f_ns">SkySwitch domain</label>' +
+          '<input id="f_ns" value="' + h(editing ? t.ns_domain : '') + '" placeholder="acme.yourdomain.com"></div>' +
+        '<div class="field"><label for="f_ext">Main extension</label>' +
+          '<input id="f_ext" value="' + h(editing ? (t.main_extension || '') : '') + '" placeholder="2001"></div>' +
+      '</div>' +
       '<div class="grid2">' +
         '<div class="field"><label for="f_color">Brand colour</label>' +
           '<input id="f_color" value="' + h(editing ? (t.brand_color || '') : '') + '" placeholder="#2F6FED"></div>' +
@@ -306,6 +313,7 @@
             name: veil.querySelector('#f_name').value.trim(),
             hostname: veil.querySelector('#f_host').value.trim().toLowerCase(),
             ns_domain: veil.querySelector('#f_ns').value.trim(),
+            main_extension: veil.querySelector('#f_ext').value.trim() || null,
             brand_color: veil.querySelector('#f_color').value.trim() || null,
             support_email: veil.querySelector('#f_email').value.trim() || null,
             support_phone: veil.querySelector('#f_phone').value.trim() || null,

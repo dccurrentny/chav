@@ -8,9 +8,7 @@
 
   var state = { brand: null, me: null, csrf: null, rules: [], history: [] };
 
-  // The extension whose rules this portal shows. Per-customer once the console
-  // can set it; until then it is the main line every tenant is set up with.
-  var EXTENSION = '2001';
+
 
   var boot = document.getElementById('boot');
   var root = document.getElementById('root');
@@ -243,9 +241,20 @@
 
   async function loadRules() {
     var host = document.getElementById('rules');
+    var ext = state.me.tenant.mainExtension;
+
+    // Never fall back to a default: a wrong extension would show one customer
+    // another customer's line, which is worse than showing nothing.
+    if (!ext) {
+      host.innerHTML = '<div class="alert alert-warn">Your provider has not finished ' +
+        'setting this up yet. Get in touch and they can point this page at your main line.</div>';
+      return;
+    }
+
     try {
       // `user` is the API's name for the extension the rules belong to.
-      var out = await api('/api/ns/answerrule.list', { method: 'POST', body: { user: EXTENSION } });
+      // `user` is the API's name for the extension the rules belong to.
+      var out = await api('/api/ns/answerrule.list', { method: 'POST', body: { user: ext } });
       var rules = normaliseRules(out.data);
       state.rules = rules;
       host.innerHTML = rules.length ? rules.map(ruleRow).join('') :

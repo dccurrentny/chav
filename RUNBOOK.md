@@ -106,6 +106,13 @@ Three things hold, and are worth knowing before you rely on it:
 **Operators can see and change every customer.** Keep the list short, and
 disable leavers the same day — disabling kills their live sessions at once.
 
+### Point a customer's portal at their line
+
+A customer's portal shows the answer rules for one extension, set per customer
+in the console (**Customers → Edit → Main extension**). Until it is set their
+portal says the setup is not finished rather than showing anyone else's line —
+there is deliberately no default.
+
 ### Rebrand a customer
 
 ```sql

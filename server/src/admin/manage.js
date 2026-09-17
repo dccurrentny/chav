@@ -86,7 +86,7 @@ adminRouter.get('/overview', async (_req, res, next) => {
 adminRouter.get('/tenants', async (_req, res, next) => {
   try {
     const { rows } = await query(
-      `SELECT t.id, t.name, t.ns_domain, t.hostname, t.status,
+      `SELECT t.id, t.name, t.ns_domain, t.hostname, t.status, t.main_extension,
               t.brand_name, t.brand_color, t.logo_url, t.support_email, t.support_phone,
               t.created_at,
               (SELECT count(*) FROM users u WHERE u.tenant_id = t.id AND u.status='active') AS user_count,
@@ -98,9 +98,10 @@ adminRouter.get('/tenants', async (_req, res, next) => {
 });
 
 const tenantInput = z.object({
-  name:          z.string().min(1).max(120),
-  ns_domain:     z.string().min(1).max(253),
-  hostname:      hostname,
+  name:           z.string().min(1).max(120),
+  ns_domain:      z.string().min(1).max(253),
+  hostname:       hostname,
+  main_extension: z.string().regex(/^\d{3,6}$/, 'must be 3-6 digits').nullish(),
   brand_color:   hexColor.nullish(),
   logo_url:      z.string().url().max(500).nullish(),
   support_email: z.string().email().max(254).nullish(),
@@ -115,10 +116,10 @@ adminRouter.post('/tenants', async (req, res, next) => {
 
     const { rows } = await query(
       `INSERT INTO tenants (name, ns_domain, hostname, brand_name, brand_color,
-                            logo_url, support_email, support_phone)
-       VALUES ($1,$2,$3,$1,$4,$5,$6,$7) RETURNING id`,
+                            logo_url, support_email, support_phone, main_extension)
+       VALUES ($1,$2,$3,$1,$4,$5,$6,$7,$8) RETURNING id`,
       [t.name, t.ns_domain, t.hostname, t.brand_color ?? null, t.logo_url ?? null,
-       t.support_email ?? null, t.support_phone ?? null],
+       t.support_email ?? null, t.support_phone ?? null, t.main_extension ?? null],
     );
     _clearTenantCache();
     await log(req, { tenantId: rows[0].id, op: 'staff.tenant.create', target: t.hostname,
@@ -151,11 +152,12 @@ adminRouter.patch('/tenants/:id', async (req, res, next) => {
     const next_ = { ...before, ...patch };
     const { rows } = await query(
       `UPDATE tenants SET name=$2, ns_domain=$3, hostname=$4,
-              brand_name=$5, brand_color=$6, logo_url=$7, support_email=$8, support_phone=$9
+              brand_name=$5, brand_color=$6, logo_url=$7, support_email=$8,
+              support_phone=$9, main_extension=$10
         WHERE id=$1 RETURNING id`,
       [req.params.id, next_.name, next_.ns_domain, next_.hostname,
        patch.name ?? next_.brand_name, next_.brand_color, next_.logo_url,
-       next_.support_email, next_.support_phone],
+       next_.support_email, next_.support_phone, next_.main_extension],
     );
     _clearTenantCache();
     await log(req, { tenantId: rows[0].id, op: 'staff.tenant.update', target: next_.hostname,

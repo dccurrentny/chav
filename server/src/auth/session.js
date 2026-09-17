@@ -30,6 +30,7 @@ export async function loadSession(token) {
     `SELECT s.token_hash, s.csrf_secret, s.expires_at, s.impersonated_by,
             u.id AS user_id, u.email, u.role, u.status AS user_status,
             t.id AS tenant_id, t.ns_domain, t.name AS tenant_name, t.status AS tenant_status,
+            t.main_extension,
             st.email AS staff_email
        FROM sessions s
        JOIN users   u  ON u.id = s.user_id

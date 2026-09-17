@@ -23,7 +23,7 @@ export async function lookupByHostname(hostname) {
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.tenant;
 
   const { rows } = await query(
-    `SELECT id, name, ns_domain, status,
+    `SELECT id, name, ns_domain, status, main_extension,
             hostname, brand_name, brand_color, logo_url, support_email, support_phone
        FROM tenants
       WHERE lower(hostname) = $1`,

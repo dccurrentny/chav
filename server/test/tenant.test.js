@@ -78,3 +78,19 @@ test('an authenticated session with no resolved tenant is rejected', () => {
   assert.equal(res.statusCode, 401);
   assert.equal(res.body.error, 'wrong_portal');
 });
+
+test('a tenant with no extension set reports none, and never a default', async () => {
+  // The frontend used to hardcode 2001, so every customer's portal asked about
+  // the same extension. A wrong default is worse than nothing here: it would
+  // show one customer another customer's line.
+  const src = await import('node:fs/promises')
+    .then((fs) => fs.readFile(new URL('../../public/app.js', import.meta.url), 'utf8'));
+
+  assert.ok(!/EXTENSION\s*=\s*['"]\d+['"]/.test(src),
+    'a hardcoded extension is back in the customer portal');
+  assert.match(src, /mainExtension/,
+    'the portal no longer reads the tenant extension');
+  // And it must refuse to load rules rather than fall back.
+  assert.match(src, /if \(!ext\)/,
+    'the portal does not guard against a missing extension');
+});

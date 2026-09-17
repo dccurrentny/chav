@@ -116,7 +116,13 @@ authRouter.get('/me', requireAuth, (req, res) => {
     email: req.session.email,
     // A support view is read-only whatever the account's own role says.
     role: impersonated ? 'member' : req.session.role,
-    tenant: { name: req.session.tenant_name, domain: req.session.ns_domain },
+    tenant: {
+      name: req.session.tenant_name,
+      domain: req.session.ns_domain,
+      // The extension this portal shows. Null until an operator sets it, which
+      // the portal reports rather than guessing at someone else's line.
+      mainExtension: req.session.main_extension || null,
+    },
     csrfToken: req.session.csrf_secret,
     impersonation: impersonated
       ? { by: req.session.staff_email, expiresAt: req.session.expires_at }
