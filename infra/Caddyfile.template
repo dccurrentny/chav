@@ -1,0 +1,118 @@
+{
+	# On-demand TLS: a certificate is obtained the first time a customer's
+	# hostname is requested, so adding a customer needs no Caddy change.
+	#
+	# The `ask` endpoint is what makes this safe. Without it, anyone who points
+	# a DNS record at this droplet would make us request a certificate on their
+	# behalf — burning Let's Encrypt rate limits and letting a stranger mint
+	# certs against our IP. The portal answers 200 only for a hostname that
+	# belongs to an active tenant.
+	# `interval` and `burst` used to live here. Current Caddy rejects them —
+	# they were deprecated in favour of letting the ask endpoint decide, and a
+	# config carrying them fails to parse, so Caddy will not start at all.
+	on_demand_tls {
+		ask http://127.0.0.1:3000/internal/tls-check
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Staff console. A named block, so it matches before the catch-all below and
+# a customer hostname can never be served the admin bundle.
+# ---------------------------------------------------------------------------
+${ADMIN_HOSTNAME} {
+	encode gzip zstd
+
+	handle /api/admin/* {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	# The console has no business reaching customer-facing endpoints.
+	handle /api/* {
+		respond "not found" 404
+	}
+	handle /internal/* {
+		respond "not found" 404
+	}
+
+	handle {
+		root * /opt/chav/public-admin
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options    "nosniff"
+		Referrer-Policy           "no-referrer"
+		X-Frame-Options           "DENY"
+		X-Robots-Tag              "noindex, nofollow"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/admin.log {
+			roll_size 20mb
+			roll_keep 20
+		}
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Customer portals. One block serves every customer; which customer a request
+# belongs to is decided by the hostname, server-side, in server/src/tenant.js.
+# ---------------------------------------------------------------------------
+https:// {
+	tls {
+		on_demand
+	}
+
+	encode gzip zstd
+
+	# Neither the admin API nor the TLS gate is reachable from a customer host.
+	handle /api/admin/* {
+		respond "not found" 404
+	}
+	handle /internal/* {
+		respond "not found" 404
+	}
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:3000
+	}
+	# Where a support "view as" link is redeemed. Must reach the app, not the
+	# static file server.
+	handle /__impersonate* {
+		reverse_proxy 127.0.0.1:3000
+	}
+	handle /healthz {
+		reverse_proxy 127.0.0.1:3000
+	}
+	handle /readyz {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	handle {
+		root * /opt/chav/public
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options    "nosniff"
+		Referrer-Policy           "strict-origin-when-cross-origin"
+		X-Frame-Options           "DENY"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/portal.log {
+			roll_size 20mb
+			roll_keep 10
+		}
+	}
+}
+
+http:// {
+	redir https://{host}{uri} permanent
+}

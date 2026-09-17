@@ -1,0 +1,81 @@
+name: Deploy portal
+
+# Deliberately NOT on push to main yet. Three things this needs do not exist:
+# the `deploy` user it logs in as (provision.sh does not create one), the
+# DEPLOY_HOST and DEPLOY_SSH_KEY secrets, and the DATABASE_URL fix its migrate
+# step needs — see RUNBOOK.md. Wired to push before all that is done, every
+# merge to main goes red, and a half-working SSH would leave the droplet on new
+# code with the service never restarted.
+#
+# When the deploy user and secrets are in place, restore:
+#   push:
+#     branches: [main]
+#     paths: ['server/**', 'infra/**', '.github/workflows/deploy.yml']
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+        working-directory: server
+      - run: npm test
+        working-directory: server
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: deploy
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd /opt/chav
+
+            # Record where we are so the health gate below can roll back.
+            PREVIOUS="$(git rev-parse HEAD)"
+            echo "current revision: $PREVIOUS"
+
+            git fetch --quiet origin main
+            git reset --hard origin/main
+
+            cd server
+            npm ci --omit=dev
+            npm run migrate
+
+            sudo systemctl restart portal
+
+            # Health gate: give it 30s to come up, roll back if it does not.
+            for i in $(seq 1 30); do
+              if curl -fsS --max-time 2 http://127.0.0.1:3000/readyz >/dev/null 2>&1; then
+                echo "healthy after ${i}s"
+                exit 0
+              fi
+              sleep 1
+            done
+
+            echo "::error::portal did not become healthy — rolling back to $PREVIOUS"
+            cd /opt/chav
+            git reset --hard "$PREVIOUS"
+            cd server && npm ci --omit=dev
+            sudo systemctl restart portal
+            exit 1

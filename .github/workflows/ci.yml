@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches-ignore: [main]   # main is covered by deploy.yml
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - run: npm ci
+        working-directory: server
+
+      - run: npm test
+        working-directory: server
+
+      # The provisioning and backup scripts run as root on the droplet, so a
+      # shell typo there is a production incident rather than a failed build.
+      - name: Shell-check infra scripts
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck infra/provision.sh infra/backup.sh
+
+      - name: Verify no secrets are committed
+        run: |
+          if grep -rniE '^(NS_CLIENT_SECRET|NS_PASSWORD|SESSION_SECRET)=.+' \
+               --include='*.env' --exclude='*.example' . ; then
+            echo "::error::a populated .env file is committed"
+            exit 1
+          fi
+          echo "clean"

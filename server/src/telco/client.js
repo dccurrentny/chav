@@ -1,0 +1,215 @@
+// SkySwitch Telco API client.
+//
+// A different server from the PBX: different host, different credentials, and
+// in general a different authentication scheme. Rather than guess which, the
+// scheme is configured (TELCO_AUTH_STYLE) and this client implements the three
+// that cover essentially every REST API of this kind.
+//
+// The request shape below is a plain REST call — method, path, JSON body. If
+// the Telco API turns out to use an object/action convention like the PBX, that
+// belongs in the operation definitions, not here.
+import { config } from '../config.js';
+import { getTelcoSettingsForTenant } from '../settings.js';
+import crypto from 'node:crypto';
+import { logger } from '../logger.js';
+import { NsError } from '../netsapiens/client.js';
+
+export const AUTH_STYLES = Object.freeze(['bearer', 'basic', 'oauth2']);
+
+// Documented on developers.skyswitch.com. Listed here so the console can offer
+// them rather than expecting an operator to remember the spellings.
+export const TELCO_SCOPES = Object.freeze([
+  'account', 'user', 'catalog', 'phone_number', 'routing', 'e911', 'billing',
+  'lnp', 'back_office', 'carrier', 'pbx', 'entitlement', 'uc_config',
+  'messaging', 'report', 'branding', 'port-in', 'ten_dlc', 'tollfree_a2p',
+]);
+
+// One token per credential set, as on the PBX side: a customer signing in as
+// its own subscriber must not share another customer's token.
+const tokens = new Map();
+const inFlight = new Map();
+
+export function _resetTelcoToken() {
+  tokens.clear();
+  inFlight.clear();
+}
+
+async function creds(tenantId = null) {
+  const s = await getTelcoSettingsForTenant(tenantId);
+  const v = Object.fromEntries(Object.entries(s).map(([k, x]) => [k, x.value]));
+  const style = (v.TELCO_AUTH_STYLE || 'bearer').toLowerCase();
+
+  // Which fields are required depends on the scheme, so validate per style
+  // rather than demanding everything.
+  let required;
+  if (style === 'basic')       required = ['TELCO_BASE_URL', 'TELCO_USERNAME', 'TELCO_PASSWORD'];
+  else if (style === 'oauth2') required = ['TELCO_BASE_URL', 'TELCO_CLIENT_ID', 'TELCO_CLIENT_SECRET',
+                                           'TELCO_USERNAME', 'TELCO_PASSWORD'];
+  else                         required = ['TELCO_BASE_URL', 'TELCO_API_KEY'];
+
+  const missing = required.filter((k) => !v[k]);
+  const fingerprint = crypto.createHash('sha256')
+    .update(JSON.stringify([v.TELCO_BASE_URL, v.TELCO_CLIENT_ID, v.TELCO_USERNAME]))
+    .digest('hex');
+  return { values: v, style, missing, configured: missing.length === 0, fingerprint };
+}
+
+function transportError(err) {
+  return new NsError(
+    err.name === 'TimeoutError'
+      ? 'SkySwitch Telco API timed out'
+      : `SkySwitch Telco API unreachable: ${err.message}`,
+    { retryable: true },
+  );
+}
+
+async function oauthToken(c) {
+  const cachedToken = tokens.get(c.fingerprint);
+  if (cachedToken && Date.now() < cachedToken.expiresAt - 60_000) return cachedToken.accessToken;
+
+  if (!inFlight.has(c.fingerprint)) inFlight.set(c.fingerprint, (async () => {
+    const v = c.values;
+    // Configurable: SkySwitch documents this on telco.readme.io and it is not
+    // worth hard-coding a path from memory when getting it wrong looks like an
+    // authentication failure.
+    const url = new URL(v.TELCO_TOKEN_PATH || '/oauth2/token', v.TELCO_BASE_URL).toString();
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'password',
+          client_id: v.TELCO_CLIENT_ID,
+          client_secret: v.TELCO_CLIENT_SECRET,
+          username: v.TELCO_USERNAME,
+          password: v.TELCO_PASSWORD,
+          // Ask only for what this portal does. The Telco API scopes include
+          // billing, back_office and lnp; a token that never requests them
+          // cannot be turned against them.
+          ...(v.TELCO_SCOPES ? { scope: v.TELCO_SCOPES } : {}),
+        }),
+        signal: AbortSignal.timeout(config.NS_TIMEOUT_MS),
+      });
+    } catch (err) {
+      throw transportError(err);
+    }
+    if (!res.ok) {
+      throw new NsError(`Telco token request failed (${res.status})`, {
+        status: res.status, retryable: res.status >= 500,
+      });
+    }
+    const json = await res.json().catch(() => null);
+    if (!json?.access_token) throw new NsError('Telco token response had no access_token');
+    const tok = {
+      accessToken: json.access_token,
+      expiresAt: Date.now() + (Number(json.expires_in) || 3600) * 1000,
+    };
+    tokens.set(c.fingerprint, tok);
+    return tok.accessToken;
+  })().finally(() => { inFlight.delete(c.fingerprint); }));
+
+  return inFlight.get(c.fingerprint);
+}
+
+async function authHeader(c) {
+  const v = c.values;
+  if (c.style === 'basic') {
+    const b64 = Buffer.from(`${v.TELCO_USERNAME}:${v.TELCO_PASSWORD}`).toString('base64');
+    return `Basic ${b64}`;
+  }
+  if (c.style === 'oauth2') {
+    return `Bearer ${await oauthToken(c)}`;
+  }
+  return `Bearer ${v.TELCO_API_KEY}`;
+}
+
+/**
+ * Call the Telco API.
+ *
+ * `path` comes from an operation definition, never from a client, and query
+ * parameters are built here so a value can never smuggle in a second one.
+ */
+export async function telcoRequest(method, path, { query = {}, body = null, tenantId = null } = {}) {
+  const c = await creds(tenantId);
+  if (!c.configured) {
+    throw new NsError('The SkySwitch Telco API is not connected on this server', {
+      notConfigured: true,
+      missing: c.missing,
+      retryable: false,
+    });
+  }
+
+  const url = new URL(path, c.values.TELCO_BASE_URL);
+  for (const [k, val] of Object.entries(query)) {
+    if (val !== undefined && val !== null) url.searchParams.set(k, String(val));
+  }
+
+  const started = Date.now();
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: {
+        Accept: 'application/json',
+        Authorization: await authHeader(c),
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(config.NS_TIMEOUT_MS),
+    });
+  } catch (err) {
+    const e = transportError(err);
+    e.durationMs = Date.now() - started;
+    throw e;
+  }
+
+  // An expired oauth2 token looks like any other 401; drop it and try once.
+  if (res.status === 401 && c.style === 'oauth2' && tokens.has(c.fingerprint)) {
+    tokens.delete(c.fingerprint);
+    return telcoRequest(method, path, { query, body, tenantId });
+  }
+
+  const durationMs = Date.now() - started;
+  const text = await res.text();
+
+  if (!res.ok) {
+    throw new NsError(`SkySwitch Telco API returned ${res.status}`, {
+      status: res.status,
+      detail: text.slice(0, 500),
+      retryable: res.status >= 500 || res.status === 429,
+      durationMs,
+    });
+  }
+
+  let data;
+  try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+  return { data, durationMs };
+}
+
+/** Used by the console's Test connection button for the Telco server. */
+export async function testTelcoConnection(tenantId = null) {
+  _resetTelcoToken();
+  const c = await creds(tenantId);
+  if (!c.configured) return { ok: false, reason: 'not_configured', missing: c.missing };
+
+  try {
+    // No universally safe read endpoint is known for this API yet, so prove
+    // reachability and credentials as far as we can without inventing a path:
+    // build the auth header (which performs the oauth2 exchange when that is
+    // the configured style) and make one request to the base URL.
+    const header = await authHeader(c);
+    const res = await fetch(new URL('/', c.values.TELCO_BASE_URL), {
+      method: 'GET',
+      headers: { Accept: 'application/json', Authorization: header },
+      signal: AbortSignal.timeout(config.NS_TIMEOUT_MS),
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, reason: 'auth_failed', detail: `Server answered ${res.status}` };
+    }
+    return { ok: true, detail: `Server reachable (HTTP ${res.status})` };
+  } catch (err) {
+    logger.warn({ err: err.message }, 'telco connection test failed');
+    return { ok: false, reason: 'auth_failed', detail: err.message };
+  }
+}
