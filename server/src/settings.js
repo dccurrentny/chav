@@ -75,6 +75,85 @@ function decrypt(buf) {
   return Buffer.concat([d.update(ct), d.final()]).toString('utf8');
 }
 
+// Per-tenant overrides, cached the same way as the global settings.
+const tenantCache = new Map();   // tenantId -> { at, values }
+
+export function invalidateTenantSettings(tenantId) {
+  if (tenantId) tenantCache.delete(tenantId);
+  else tenantCache.clear();
+}
+
+async function loadTenantStored(tenantId) {
+  const hit = tenantCache.get(tenantId);
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.values;
+
+  const values = {};
+  try {
+    const { rows } = await query(
+      'SELECT key, value_enc FROM tenant_settings WHERE tenant_id = $1', [tenantId]);
+    for (const row of rows) {
+      if (!PBX_KEYS.includes(row.key)) continue;
+      try { values[row.key] = decrypt(row.value_enc); }
+      catch { logger.error({ tenantId, key: row.key }, 'could not decrypt a tenant setting'); }
+    }
+  } catch (err) {
+    logger.error({ err: err.message, tenantId }, 'could not read tenant_settings');
+  }
+  tenantCache.set(tenantId, { at: Date.now(), values });
+  return values;
+}
+
+export async function setTenantSettings(tenantId, entries, staffId) {
+  const bad = Object.keys(entries).filter((k) => !PBX_KEYS.includes(k));
+  if (bad.length) throw new Error(`not a per-customer key: ${bad.join(', ')}`);
+
+  for (const [key, value] of Object.entries(entries)) {
+    if (value === null || value === '') {
+      await query('DELETE FROM tenant_settings WHERE tenant_id = $1 AND key = $2', [tenantId, key]);
+      continue;
+    }
+    await query(
+      `INSERT INTO tenant_settings (tenant_id, key, value_enc, updated_by, updated_at)
+       VALUES ($1,$2,$3,$4, now())
+         ON CONFLICT (tenant_id, key) DO UPDATE
+           SET value_enc = EXCLUDED.value_enc, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+      [tenantId, key, encrypt(value), staffId ?? null],
+    );
+  }
+  invalidateTenantSettings(tenantId);
+}
+
+/**
+ * The PBX credentials to use for a tenant.
+ *
+ * A customer's own credentials win over the server-wide ones. Partial
+ * overrides are deliberately not merged: mixing one customer's username with
+ * another's client secret would be a confusing way to fail. Either a customer
+ * has its own complete set or it uses the shared one.
+ */
+export async function getNsSettingsForTenant(tenantId) {
+  const own = tenantId ? await loadTenantStored(tenantId) : {};
+  const complete = PBX_KEYS.every((k) => own[k]);
+  if (complete) {
+    return Object.fromEntries(PBX_KEYS.map((k) => [k, { value: own[k], set: true, source: 'tenant' }]));
+  }
+  return getNsSettings();
+}
+
+/** Which per-customer keys are set, for the console. Never their values. */
+export async function describeTenantNsSettings(tenantId) {
+  const own = await loadTenantStored(tenantId);
+  const complete = PBX_KEYS.every((k) => own[k]);
+  const out = { complete, inUse: complete, keys: {} };
+  for (const key of PBX_KEYS) {
+    out.keys[key] = {
+      set: Boolean(own[key]),
+      value: SECRET_KEYS.includes(key) ? null : (own[key] ?? null),
+    };
+  }
+  return out;
+}
+
 // Read on every SkySwitch call, so cache briefly. Short enough that a change
 // takes effect without a restart, long enough not to query per request.
 const CACHE_TTL_MS = 15_000;

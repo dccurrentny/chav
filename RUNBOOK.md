@@ -106,6 +106,31 @@ Three things hold, and are worth knowing before you rely on it:
 **Operators can see and change every customer.** Keep the list short, and
 disable leavers the same day — disabling kills their live sessions at once.
 
+### Which SkySwitch credentials a customer uses
+
+A SkySwitch token carries a scope, and the scope decides what it can reach:
+
+| Scope | Reaches |
+|---|---|
+| Basic User | that subscriber only |
+| Office Manager | that subscriber's domain |
+| Reseller | every domain under the reseller |
+
+Two deployments follow, and both are supported:
+
+- **One shared Reseller credential** (System tab). Simplest. The token *could*
+  reach any customer, so only this application keeps them apart.
+- **Per-customer credentials** (Customers → Edit). Each customer's own Office
+  Manager subscriber, so SkySwitch enforces the boundary as well. A bug in our
+  domain scoping cannot cross it.
+
+Per-customer wins where it matters. A customer with no credentials of its own
+falls back to the shared ones, so the two mix freely.
+
+The server checks before every call that the token's scope covers the domain
+being asked about, and refuses otherwise — a request is never sent under
+credentials belonging to a different customer.
+
 ### Point a customer's portal at their line
 
 A customer's portal shows the answer rules for one extension, set per customer

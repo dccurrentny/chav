@@ -173,3 +173,60 @@ test('the token endpoint is the documented path', async () => {
   await nsRequest('answerrule', 'read', { extension: '2001' }).catch(() => {});
   assert.match(urls[0], /\/ns-api\/oauth2\/token\/$/);
 });
+
+// A real SkySwitch token response carries its own scope and domain. An Office
+// Manager token reaches exactly one domain, so using it for another customer
+// must fail loudly here rather than quietly at SkySwitch — or, worse, appear
+// to work against the wrong account.
+test('a token scoped to one domain is refused for another', async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    access_token: 'tok', expires_in: 3600,
+    scope: 'Office Manager', domain: 'Chaveirim.23763.service',
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  await assert.rejects(
+    () => nsRequest('answerrule', 'read', { user: '2001', domain: 'acme.23763.service' }),
+    (err) => {
+      assert.ok(err instanceof NsError);
+      assert.equal(err.scopeMismatch, true);
+      assert.equal(err.retryable, false);
+      assert.match(err.message, /Chaveirim\.23763\.service/);
+      return true;
+    },
+  );
+});
+
+test('a token scoped to the requested domain is allowed', async () => {
+  let apiCalled = false;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('oauth2/token')) {
+      return new Response(JSON.stringify({
+        access_token: 'tok', expires_in: 3600,
+        scope: 'Office Manager', domain: 'Chaveirim.23763.service',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    apiCalled = true;
+    return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  // Same domain, different case — the check must not be case-sensitive.
+  await nsRequest('answerrule', 'read', { user: '2001', domain: 'chaveirim.23763.service' });
+  assert.equal(apiCalled, true, 'a correctly scoped request was blocked');
+});
+
+test('a Reseller token is not restricted to one domain', async () => {
+  let apiCalled = false;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('oauth2/token')) {
+      return new Response(JSON.stringify({
+        access_token: 'tok', expires_in: 3600,
+        scope: 'Reseller', domain: 'dccurrent.23763.service',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    apiCalled = true;
+    return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  await nsRequest('answerrule', 'read', { user: '2001', domain: 'anyone.23763.service' });
+  assert.equal(apiCalled, true, 'a Reseller token was wrongly restricted');
+});

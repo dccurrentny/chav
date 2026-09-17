@@ -10,6 +10,7 @@ import { createGrant, impersonationUrl, IMPERSONATION_TTL_MINUTES } from './impe
 import {
   describeNsSettings, describeTelcoSettings, setSettings,
   getNsSettings, getTelcoSettings, PBX_KEYS, TELCO_KEYS,
+  describeTenantNsSettings, setTenantSettings,
 } from '../settings.js';
 import { testConnection, _resetTokenCache } from '../netsapiens/client.js';
 import { testTelcoConnection, _resetTelcoToken, AUTH_STYLES, TELCO_SCOPES } from '../telco/client.js';
@@ -190,6 +191,50 @@ adminRouter.post('/tenants/:id/status', async (req, res, next) => {
     await log(req, { tenantId: req.params.id, op: 'staff.tenant.status',
                      target: rows[0].hostname, after: { status: rows[0].status }, result: 'ok' });
     res.json({ ok: true, status: rows[0].status });
+  } catch (err) { next(err); }
+});
+
+/* ------------------------------------------- per-customer PBX credentials */
+
+// A customer can have its own SkySwitch subscriber. Where it does, SkySwitch
+// enforces the tenant boundary itself rather than trusting our domain scoping.
+adminRouter.get('/tenants/:id/credentials', requireOwner, async (req, res, next) => {
+  try {
+    res.json(await describeTenantNsSettings(req.params.id));
+  } catch (err) { next(err); }
+});
+
+adminRouter.put('/tenants/:id/credentials', requireOwner, async (req, res, next) => {
+  try {
+    const shape = {};
+    for (const key of PBX_KEYS) shape[key] = z.string().max(500).nullish();
+    const parsed = z.object(shape).strict().safeParse(req.body ?? {});
+    if (!parsed.success) return bad(res, parsed.error.issues);
+
+    const entries = {};
+    for (const [k, v] of Object.entries(parsed.data)) if (v !== undefined) entries[k] = v;
+    if (!Object.keys(entries).length) {
+      return res.status(400).json({ error: 'invalid_input', message: 'Nothing to change.' });
+    }
+
+    await setTenantSettings(req.params.id, entries, req.staff.staff_id);
+    _resetTokenCache();
+    await log(req, {
+      tenantId: req.params.id, op: 'staff.tenant.credentials',
+      params: { changed: Object.keys(entries) }, result: 'ok',
+    });
+    res.json({ ok: true, ...(await describeTenantNsSettings(req.params.id)) });
+  } catch (err) { next(err); }
+});
+
+adminRouter.post('/tenants/:id/credentials/test', requireOwner, async (req, res, next) => {
+  try {
+    const result = await testConnection(req.params.id);
+    await log(req, {
+      tenantId: req.params.id, op: 'staff.tenant.credentials.test',
+      result: result.ok ? 'ok' : 'error', error: result.ok ? null : result.reason,
+    });
+    res.json(result);
   } catch (err) { next(err); }
 });
 

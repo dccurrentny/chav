@@ -92,7 +92,7 @@ nsRouter.post('/:operation', writeLimiter, async (req, res, next) => {
     // Capture prior state so the audit row can show before/after.
     let before = null;
     if (op.write && op.readBack) {
-      before = await safeReadBack(op, params);
+      before = await safeReadBack(op, params, s.tenant_id);
     }
 
     // Dispatch to the server the operation belongs to. The two SkySwitch APIs
@@ -100,12 +100,14 @@ nsRouter.post('/:operation', writeLimiter, async (req, res, next) => {
     // Telco — so this is a fork, not a base-URL swap.
     const { data, durationMs } = op.server === 'telco'
       ? await telcoRequest(op.method, op.path, { query: params, body: op.sendBody ? parsed.data : null })
-      : await nsRequest(op.object, op.action, params);
+      // The tenant decides which credentials are used: its own if it has them,
+      // otherwise the server-wide ones.
+      : await nsRequest(op.object, op.action, params, { tenantId: s.tenant_id });
 
     let after = null;
     let verified = null;
     if (op.write && op.readBack) {
-      after = await safeReadBack(op, params);
+      after = await safeReadBack(op, params, s.tenant_id);
       // A 200 from NetSapiens does not reliably mean the change landed.
       verified = after !== null && JSON.stringify(after) !== JSON.stringify(before);
     }
@@ -125,6 +127,17 @@ nsRouter.post('/:operation', writeLimiter, async (req, res, next) => {
         result: 'error', error: err.message, durationMs: err.durationMs ?? null, ip: req.ip,
       });
       logger.warn({ op: name, status: err.status, detail: err.detail }, 'SkySwitch call failed');
+      if (err.scopeMismatch) {
+        // An operator problem, not a customer one. Say so without exposing
+        // which other domain the credentials belong to.
+        return res.status(503).json({
+          error: 'not_configured',
+          message: 'This portal is not correctly connected to the phone system. ' +
+                   'Your provider has been recorded as needing to fix it.',
+          retryable: false,
+        });
+      }
+
       if (err.notConfigured) {
         return res.status(503).json({
           error: 'not_configured',
@@ -158,7 +171,7 @@ nsRouter.post('/:operation', writeLimiter, async (req, res, next) => {
 });
 
 // A read-back must never turn a successful write into a 500.
-async function safeReadBack(op, params) {
+async function safeReadBack(op, params, tenantId) {
   const readOp = getOperation(op.readBack.op);
   if (!readOp) return null;
   const key = op.readBack.key;
@@ -166,7 +179,7 @@ async function safeReadBack(op, params) {
     const { data } = await nsRequest(readOp.object, readOp.action, {
       [key]: params[key],
       domain: params.domain,
-    });
+    }, { tenantId });
     return data;
   } catch (err) {
     logger.warn({ err: err.message, op: op.readBack.op }, 'read-back failed');

@@ -4,7 +4,8 @@
 // Nothing here is per-viewer: the browser never sees a NetSapiens token, and
 // the token is refreshed centrally rather than once per customer session.
 import { config } from '../config.js';
-import { getNsSettings } from '../settings.js';
+import { getNsSettingsForTenant } from '../settings.js';
+import crypto from 'node:crypto';
 import { logger } from '../logger.js';
 
 const NS_API_PATH = '/ns-api/';
@@ -17,10 +18,11 @@ export class NsError extends Error {
   }
 }
 
-// Single cached token for the process, plus the in-flight promise so a burst
-// of concurrent requests triggers one refresh rather than N.
-let cached = null;        // { accessToken, refreshToken, expiresAt }
-let inFlight = null;
+// One cached token PER CREDENTIAL SET. A single shared token was fine while
+// every tenant used the same credentials; now that a customer can have its
+// own, caching one token globally would hand one customer another's token.
+const tokens = new Map();     // credential fingerprint -> { accessToken, ... }
+const inFlight = new Map();   // credential fingerprint -> Promise
 
 // Refresh this far before actual expiry so a request never races the clock.
 const EXPIRY_SKEW_MS = 60_000;
@@ -34,12 +36,25 @@ function inspectUrl(baseUrl) {
 }
 
 // Resolved per call rather than read once at startup, so credentials saved in
-// the console take effect without restarting the service.
-async function nsCreds() {
-  const s = await getNsSettings();
+// the console take effect without restarting the service, and so a customer
+// with its own credentials gets those.
+async function nsCreds(tenantId) {
+  const s = await getNsSettingsForTenant(tenantId);
   const values = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.value]));
   const missing = Object.entries(values).filter(([, v]) => !v).map(([k]) => k);
-  return { values, missing, configured: missing.length === 0 };
+
+  // Identifies the credential set without holding its secrets in a Map key.
+  const fingerprint = crypto.createHash('sha256')
+    .update(JSON.stringify([values.NS_BASE_URL, values.NS_CLIENT_ID, values.NS_USERNAME]))
+    .digest('hex');
+
+  return {
+    values,
+    missing,
+    configured: missing.length === 0,
+    fingerprint,
+    source: Object.values(s)[0]?.source ?? null,
+  };
 }
 
 // Every transport failure in this module becomes an NsError. Leaking a raw
@@ -109,11 +124,16 @@ async function requestToken(params, baseUrl, { method = 'POST' } = {}) {
     accessToken: json.access_token,
     refreshToken: json.refresh_token ?? null,
     expiresAt: Date.now() + ttlMs,
+    // The token states what it can reach. Kept so a request can be checked
+    // against it before it is sent.
+    scope: json.scope ?? null,
+    domain: json.domain ?? null,
   };
 }
 
 async function refreshToken(creds) {
   const v = creds.values;
+  const cached = tokens.get(creds.fingerprint);
   // Prefer the refresh grant; fall back to password when it is gone or stale.
   if (cached?.refreshToken) {
     try {
@@ -146,19 +166,18 @@ async function getToken(creds) {
       retryable: false,
     });
   }
-  if (cached && Date.now() < cached.expiresAt - EXPIRY_SKEW_MS) {
-    return cached.accessToken;
+
+  const fp = creds.fingerprint;
+  const cached = tokens.get(fp);
+  if (cached && Date.now() < cached.expiresAt - EXPIRY_SKEW_MS) return cached;
+
+  // Single-flight per credential set: concurrent callers await one refresh.
+  if (!inFlight.has(fp)) {
+    inFlight.set(fp, refreshToken(creds)
+      .then((tok) => { tokens.set(fp, tok); return tok; })
+      .finally(() => { inFlight.delete(fp); }));
   }
-  // Single-flight: concurrent callers await the same refresh.
-  inFlight ??= refreshToken(creds)
-    .then((tok) => {
-      cached = tok;
-      return tok.accessToken;
-    })
-    .finally(() => {
-      inFlight = null;
-    });
-  return inFlight;
+  return inFlight.get(fp);
 }
 
 /**
@@ -167,13 +186,28 @@ async function getToken(creds) {
  * `params.domain` is set by the caller in routes.js from the session's tenant
  * and is never accepted from the client — see netsapiens/routes.js.
  */
-export async function nsRequest(object, action, params = {}, { retryOn401 = true } = {}) {
+export async function nsRequest(object, action, params = {}, { retryOn401 = true, tenantId = null } = {}) {
   const started = Date.now();
 
-  const creds = await nsCreds();
+  const creds = await nsCreds(tenantId);
   // getToken can itself fail on a SkySwitch outage; requestToken already
   // converts that to an NsError, so callers see one error type either way.
-  const token = await getToken(creds);
+  const tok = await getToken(creds);
+  const token = tok.accessToken;
+
+  // A token below Reseller scope reaches exactly one domain. If the request is
+  // for a different one SkySwitch would refuse it, but refusing here says why,
+  // and means a misconfiguration cannot quietly send one customer's request
+  // under another customer's credentials.
+  if (params.domain && tok.domain && tok.scope !== 'Reseller' &&
+      String(tok.domain).toLowerCase() !== String(params.domain).toLowerCase()) {
+    throw new NsError(
+      `These SkySwitch credentials are scoped to ${tok.domain} (${tok.scope}) ` +
+      `and cannot act on ${params.domain}. Give this customer its own credentials, ` +
+      'or use a Reseller-scope subscriber for the shared ones.',
+      { notConfigured: true, retryable: false, scopeMismatch: true },
+    );
+  }
 
   const url = new URL(NS_API_PATH, creds.values.NS_BASE_URL);
   url.searchParams.set('object', object);
@@ -205,8 +239,8 @@ export async function nsRequest(object, action, params = {}, { retryOn401 = true
   // A token can be revoked server-side before its stated expiry. Drop the
   // cache and try exactly once more.
   if (res.status === 401 && retryOn401) {
-    cached = null;
-    return nsRequest(object, action, params, { retryOn401: false });
+    tokens.delete(creds.fingerprint);
+    return nsRequest(object, action, params, { retryOn401: false, tenantId });
   }
 
   const durationMs = Date.now() - started;
@@ -237,14 +271,14 @@ export async function nsRequest(object, action, params = {}, { retryOn401 = true
  * Used by the console's "Test connection" button. Drops the cached token first
  * so it tests what is configured now, not what happened to work earlier.
  */
-export async function testConnection() {
+export async function testConnection(tenantId = null) {
   _resetTokenCache();
-  const creds = await nsCreds();
+  const creds = await nsCreds(tenantId);
   if (!creds.configured) {
     return { ok: false, reason: 'not_configured', missing: creds.missing };
   }
   try {
-    const token = await getToken(creds);
+    const { accessToken: token } = await getToken(creds);
 
     // Ask SkySwitch what this token can reach. Far more useful than "it
     // worked": the scope is what decides the blast radius of these credentials.
@@ -281,6 +315,6 @@ export async function testConnection() {
 
 // Exposed for tests and for operational reset.
 export function _resetTokenCache() {
-  cached = null;
-  inFlight = null;
+  tokens.clear();
+  inFlight.clear();
 }
