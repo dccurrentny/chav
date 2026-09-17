@@ -11,6 +11,8 @@
     painting: null,     // destination id being painted, or null for "unassign"
     dragging: false,
     dirty: false,
+    skewMs: 0,          // server clock minus this browser's clock
+    ticker: null,
   };
 
   function h(s) {
@@ -40,10 +42,86 @@
 
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
 
+  /* ------------------------------------------------------------- clocks */
+
+  // The portal's clock, not the laptop's. A browser several minutes out would
+  // otherwise show a shift ending at the wrong time, which is the one number
+  // on this page people are going to act on.
+  function nowMs() { return Date.now() + sched.skewMs; }
+
+  // How far the customer's timezone is from UTC at a given instant. Everything
+  // on this page is in their zone, whatever zone the browser happens to be in.
+  function tzOffset(tz, date) {
+    var p = {};
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    }).formatToParts(date).forEach(function (x) { p[x.type] = x.value; });
+    var asUtc = Date.UTC(+p.year, +p.month - 1, +p.day,
+      p.hour === '24' ? 0 : +p.hour, +p.minute, +p.second);
+    return asUtc - date.getTime();
+  }
+
+  // 'YYYY-MM-DDTHH:MM' as read on a clock in the customer's zone -> an instant.
+  function wallToInstant(wall, tz) {
+    var naive = new Date(wall + ':00Z');
+    if (isNaN(naive)) return null;
+    var off = tzOffset(tz, naive);
+    var t = naive.getTime() - off;
+    // One correction: an entry inside a DST shift lands on the wrong offset
+    // first time round.
+    var off2 = tzOffset(tz, new Date(t));
+    if (off2 !== off) t = naive.getTime() - off2;
+    return new Date(t);
+  }
+
+  // An instant -> 'YYYY-MM-DDTHH:MM' on a clock in the customer's zone, which
+  // is what a datetime-local input wants.
+  function instantToWall(date, tz) {
+    var shifted = new Date(date.getTime() + tzOffset(tz, date));
+    return shifted.toISOString().slice(0, 16);
+  }
+
+  function fmtTime(date, tz) {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hour: 'numeric', minute: '2-digit',
+    }).format(date);
+  }
+
+  function fmtWhen(date, tz) {
+    var today = instantToWall(new Date(nowMs()), tz).slice(0, 10);
+    var wall = instantToWall(date, tz);
+    var stamp = fmtTime(date, tz);
+    if (wall.slice(0, 10) === today) return 'today ' + stamp;
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, weekday: 'short', month: 'short', day: 'numeric',
+    }).format(date) + ' ' + stamp;
+  }
+
+  // "2h 15m", "45m", "under a minute" — no seconds, because a shift is not a
+  // stopwatch and a ticking seconds counter reads as an alarm.
+  function humanLeft(ms) {
+    if (ms <= 0) return 'now';
+    var mins = Math.floor(ms / 60000);
+    if (mins < 1) return 'under a minute';
+    var days = Math.floor(mins / 1440);
+    var hours = Math.floor((mins % 1440) / 60);
+    var rem = mins % 60;
+    if (days) return days + 'd ' + hours + 'h';
+    if (hours) return hours + 'h ' + pad2(rem) + 'm';
+    return rem + 'm';
+  }
+
+  /* -------------------------------------------------------------- render */
+
   window.renderSchedule = async function (host, api, onError) {
     host.innerHTML = '<div class="empty">Loading the schedule…</div>';
+    if (sched.ticker) { clearInterval(sched.ticker); sched.ticker = null; }
     try {
       sched.data = await api('/api/schedule');
+      if (sched.data.serverNow) {
+        sched.skewMs = new Date(sched.data.serverNow).getTime() - Date.now();
+      }
       draw(host, api, onError);
     } catch (err) {
       onError(host, err);
@@ -55,6 +133,8 @@
     var now = d.now || { day: -1, hour: -1 };
 
     host.innerHTML =
+      onNowCard(d) +
+
       '<div class="card">' +
         '<h2>Who answers the phone</h2>' +
         '<p class="desc">The people and numbers calls can go to. Add one, then ' +
@@ -68,6 +148,8 @@
         '</div>' +
         '<div id="destErr"></div>' +
       '</div>' +
+
+      overrideCard(d) +
 
       '<div class="card">' +
         '<div class="sched-head">' +
@@ -85,7 +167,140 @@
 
     renderDests(host);
     wire(host, api, onError);
+    startTicker(host, api, onError);
   }
+
+  // The one thing someone glancing at this page wants to know: who is on, and
+  // for how much longer.
+  function onNowCard(d) {
+    var cur = d.current;
+    var chip = cur
+      ? '<span class="on-dot" style="background:' + h(cur.colour || '#2F6FED') + '"></span>' +
+        '<b>' + h(cur.name || cur.target) + '</b>' +
+        (cur.name ? '<span class="num on-target">' + h(cur.target) + '</span>' : '')
+      : '<span class="on-dot on-dot-none"></span><b>Nobody scheduled</b>';
+
+    var badge = cur && cur.source === 'override'
+      ? '<span class="tag tag-override">temporary override</span>' : '';
+    if (cur && cur.source === 'override-none') badge = '<span class="tag tag-override">override: no one</span>';
+
+    return '<div class="card on-now' + (cur ? '' : ' on-now-empty') + '">' +
+      '<div class="on-head">' + chip + badge + '</div>' +
+      '<div class="on-left" id="onLeft"></div>' +
+      '<div class="on-next" id="onNext"></div>' +
+    '</div>';
+  }
+
+  // Filled by the ticker so the number stays true without reloading the page.
+  function paintLeft(host) {
+    var d = sched.data;
+    var left = host.querySelector('#onLeft');
+    var nextEl = host.querySelector('#onNext');
+    if (!left) return false;
+
+    if (!d.until) {
+      left.textContent = d.current ? 'On until further notice — nothing else is scheduled.' : '';
+      if (nextEl) nextEl.textContent = '';
+      return false;
+    }
+
+    var until = new Date(d.until);
+    var ms = until.getTime() - nowMs();
+    if (ms <= 0) return true;    // tell the caller to reload: the shift turned over
+
+    left.innerHTML = d.current
+      ? 'On for another <b>' + h(humanLeft(ms)) + '</b>, until ' +
+        h(fmtWhen(until, d.timezone))
+      : 'Nothing scheduled for another <b>' + h(humanLeft(ms)) + '</b>';
+
+    if (nextEl) {
+      nextEl.innerHTML = d.next && d.next.name
+        ? 'Then <b>' + h(d.next.name) + '</b> ' +
+          '<span class="num">' + h(d.next.target) + '</span> takes over.'
+        : 'Then nobody is scheduled.';
+    }
+    return false;
+  }
+
+  function startTicker(host, api, onError) {
+    if (sched.ticker) clearInterval(sched.ticker);
+    paintLeft(host);
+    sched.ticker = setInterval(function () {
+      // Gone from the page (the customer navigated away) — stop.
+      if (!document.body.contains(host)) { clearInterval(sched.ticker); sched.ticker = null; return; }
+      // Never reload on top of unsaved paint.
+      if (paintLeft(host) && !sched.dirty) window.renderSchedule(host, api, onError);
+    }, 15000);
+  }
+
+  /* ----------------------------------------------------------- overrides */
+
+  function overrideCard(d) {
+    var opts = d.destinations.map(function (x) {
+      return '<option value="' + h(x.id) + '">' + h(x.name) + ' — ' + h(x.target) + '</option>';
+    }).join('');
+
+    var startWall = instantToWall(new Date(nowMs()), d.timezone);
+    var endWall = instantToWall(new Date(nowMs() + 2 * 3600_000), d.timezone);
+
+    return '<div class="card">' +
+      '<h2>Just for now</h2>' +
+      '<p class="desc">Send calls somewhere else for a few hours or a few days, ' +
+        'without changing the week. When it runs out, the week takes over again ' +
+        'on its own.</p>' +
+
+      (d.destinations.length
+        ? '<div class="ovr-form">' +
+            '<label>Send calls to' +
+              '<select id="oDest">' + opts +
+                '<option value="">Nobody — leave the phone system alone</option>' +
+              '</select></label>' +
+            '<label>From<input id="oFrom" type="datetime-local" value="' + h(startWall) + '"></label>' +
+            '<label>Until<input id="oTo" type="datetime-local" value="' + h(endWall) + '"></label>' +
+            '<label class="grow">Note (optional)' +
+              '<input id="oNote" maxlength="200" placeholder="e.g. Yossi at a chasunah"></label>' +
+            '<button class="btn" id="oAdd">Set override</button>' +
+          '</div>' +
+          '<div class="ovr-quick">' +
+            '<span class="paint-label">Until</span>' +
+            '<button class="quick" data-hours="1">+1 hour</button>' +
+            '<button class="quick" data-hours="2">+2 hours</button>' +
+            '<button class="quick" data-hours="4">+4 hours</button>' +
+            '<button class="quick" data-eod="1">end of today</button>' +
+            '<button class="quick" data-eod="2">end of tomorrow</button>' +
+          '</div>'
+        : '<div class="empty" style="padding:8px 0">Add someone above first.</div>') +
+
+      '<div id="ovrErr"></div>' +
+      overrideList(d) +
+    '</div>';
+  }
+
+  function overrideList(d) {
+    if (!d.overrides || !d.overrides.length) {
+      return '<div class="empty" style="padding:10px 0 2px">Nothing overridden — the week is running as set.</div>';
+    }
+    var now = nowMs();
+    return '<ul class="ovr-list">' + d.overrides.map(function (o) {
+      var from = new Date(o.starts_at), to = new Date(o.ends_at);
+      var live = from.getTime() <= now && now < to.getTime();
+      return '<li class="ovr' + (live ? ' ovr-live' : '') + '">' +
+        '<span class="dest-dot" style="background:' +
+          h(o.destination_id ? (o.colour || '#2F6FED') : '#98A2B3') + '"></span>' +
+        '<span class="ovr-body">' +
+          '<b>' + h(o.destination_id ? o.destination_name : 'Nobody') + '</b>' +
+          (o.destination_id ? ' <span class="num">' + h(o.target) + '</span>' : '') +
+          '<span class="ovr-when">' + h(fmtWhen(from, d.timezone)) + ' → ' +
+            h(fmtWhen(to, d.timezone)) + '</span>' +
+          (o.note ? '<span class="ovr-note">' + h(o.note) + '</span>' : '') +
+        '</span>' +
+        (live ? '<span class="tag tag-live">on now</span>' : '<span class="tag">upcoming</span>') +
+        '<button class="dest-x" data-ovrdel="' + h(o.id) + '" title="Cancel">&times;</button>' +
+      '</li>';
+    }).join('') + '</ul>';
+  }
+
+  /* ---------------------------------------------------------- week grid */
 
   function paintbar(d) {
     var swatches = d.destinations.map(function (x) {
@@ -134,29 +349,33 @@
         'The phone system could not be updated: ' + h(d.applied.lastError) +
         '. It will be retried automatically.</div>';
     }
-    var currentDest = destById(d.grid[d.now.day] && d.grid[d.now.day][d.now.hour]);
     var live = d.applied.target;
-    var matches = currentDest && currentDest.target === live;
+    var matches = d.current && d.current.target === live;
     return '<div class="applied' + (matches ? '' : ' applied-stale') + '">' +
       'Calls are going to <b>' + h(live || 'nowhere set') + '</b>' +
-      (currentDest ? ' (' + h(currentDest.name) + ')' : '') +
+      (d.current && d.current.name ? ' (' + h(d.current.name) + ')' : '') +
       (matches ? '' : ' — the schedule has changed and is being applied') + '.</div>';
   }
 
   function renderDests(host) {
     var row = host.querySelector('#destRow');
+    var cur = sched.data.current;
     if (!sched.data.destinations.length) {
       row.innerHTML = '<div class="empty" style="padding:8px 0">No one added yet.</div>';
       return;
     }
     row.innerHTML = sched.data.destinations.map(function (x) {
-      return '<span class="dest">' +
+      var on = cur && cur.target === x.target;
+      return '<span class="dest' + (on ? ' dest-on' : '') + '">' +
         '<span class="dest-dot" style="background:' + h(x.colour) + '"></span>' +
         '<span><b>' + h(x.name) + '</b><span class="dest-target num">' + h(x.target) + '</span></span>' +
+        (on ? '<span class="tag tag-live">on now</span>' : '') +
         '<button class="dest-x" data-del="' + h(x.id) + '" title="Remove">&times;</button>' +
       '</span>';
     }).join('');
   }
+
+  /* ----------------------------------------------------------- wiring */
 
   function wire(host, api, onError) {
     var saveBtn = host.querySelector('#schSave');
@@ -165,6 +384,11 @@
       sched.dirty = true;
       saveBtn.disabled = false;
       saveBtn.textContent = 'Save';
+    }
+
+    function fail(sel, err) {
+      host.querySelector(sel).innerHTML =
+        '<div class="alert alert-err" style="margin-top:10px">' + h(err.message) + '</div>';
     }
 
     // ---- paint selection ----
@@ -219,8 +443,7 @@
           body: { name: name, target: target, colour: colour } });
         window.renderSchedule(host, api, onError);
       } catch (err) {
-        host.querySelector('#destErr').innerHTML =
-          '<div class="alert alert-err" style="margin-top:10px">' + h(err.message) + '</div>';
+        fail('#destErr', err);
         addBtn.disabled = false;
       }
     });
@@ -232,8 +455,65 @@
           await api('/api/schedule/destinations/' + b.dataset.del, { method: 'DELETE' });
           window.renderSchedule(host, api, onError);
         } catch (err) {
-          host.querySelector('#destErr').innerHTML =
-            '<div class="alert alert-err" style="margin-top:10px">' + h(err.message) + '</div>';
+          fail('#destErr', err);
+        }
+      });
+    });
+
+    // ---- overrides ----
+    var oAdd = host.querySelector('#oAdd');
+    if (oAdd) {
+      host.querySelectorAll('.quick').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var tz = sched.data.timezone;
+          var from = wallToInstant(host.querySelector('#oFrom').value, tz) || new Date(nowMs());
+          var to;
+          if (b.dataset.hours) {
+            to = new Date(from.getTime() + Number(b.dataset.hours) * 3600_000);
+          } else {
+            // End of today or tomorrow means midnight on the customer's clock,
+            // not on the browser's.
+            var day = instantToWall(from, tz).slice(0, 10);
+            var midnight = wallToInstant(day + 'T00:00', tz);
+            to = new Date(midnight.getTime() + Number(b.dataset.eod) * 86400_000);
+            // Re-anchor across a DST change so it is still midnight.
+            to = wallToInstant(instantToWall(to, tz).slice(0, 10) + 'T00:00', tz);
+          }
+          host.querySelector('#oTo').value = instantToWall(to, tz);
+        });
+      });
+
+      oAdd.addEventListener('click', async function () {
+        var tz = sched.data.timezone;
+        var from = wallToInstant(host.querySelector('#oFrom').value, tz);
+        var to = wallToInstant(host.querySelector('#oTo').value, tz);
+        if (!from || !to) return fail('#ovrErr', { message: 'Pick a start and an end.' });
+        if (to <= from) return fail('#ovrErr', { message: 'The override has to end after it starts.' });
+
+        oAdd.disabled = true;
+        try {
+          await api('/api/schedule/overrides', { method: 'POST', body: {
+            destinationId: host.querySelector('#oDest').value || null,
+            startsAt: from.toISOString(),
+            endsAt: to.toISOString(),
+            note: host.querySelector('#oNote').value.trim() || undefined,
+          } });
+          window.renderSchedule(host, api, onError);
+        } catch (err) {
+          fail('#ovrErr', err);
+          oAdd.disabled = false;
+        }
+      });
+    }
+
+    host.querySelectorAll('[data-ovrdel]').forEach(function (b) {
+      b.addEventListener('click', async function () {
+        if (!confirm('Cancel this override?\n\nThe week takes over again straight away.')) return;
+        try {
+          await api('/api/schedule/overrides/' + b.dataset.ovrdel, { method: 'DELETE' });
+          window.renderSchedule(host, api, onError);
+        } catch (err) {
+          fail('#ovrErr', err);
         }
       });
     });
@@ -243,7 +523,7 @@
       saveBtn.disabled = true;
       saveBtn.textContent = 'Saving…';
       try {
-        var out = await api('/api/schedule/grid', { method: 'PUT', body: { grid: sched.data.grid } });
+        await api('/api/schedule/grid', { method: 'PUT', body: { grid: sched.data.grid } });
         sched.dirty = false;
         saveBtn.textContent = 'Saved';
         // Reload so the "calls are going to" line reflects what was applied.
@@ -251,8 +531,7 @@
       } catch (err) {
         saveBtn.disabled = false;
         saveBtn.textContent = 'Save';
-        host.querySelector('#schErr').innerHTML =
-          '<div class="alert alert-err" style="margin-top:12px">' + h(err.message) + '</div>';
+        fail('#schErr', err);
       }
     });
 

@@ -32,23 +32,43 @@ const target = z.string()
   .regex(/^(\d{3,6}|\+?\d{7,15})$/, 'must be an extension or a phone number');
 const colour = z.string().regex(/^#[0-9A-Fa-f]{6}$/, 'must be a colour like #2F6FED');
 
+// Push the change to SkySwitch now, rather than leaving the phone system up to
+// a minute behind what the customer just saved and is looking at.
+async function applyNow(tenantId) {
+  const { rows } = await query(
+    `SELECT t.id, t.name, t.ns_domain, t.main_extension, t.timezone, s.applied_target
+       FROM tenants t LEFT JOIN tenant_schedule_state s ON s.tenant_id = t.id
+      WHERE t.id = $1`, [tenantId]);
+  return rows[0] ? applyForTenant(rows[0]) : null;
+}
+
 scheduleRouter.get('/', async (req, res, next) => {
   try {
     const tenantId = req.session.tenant_id;
-    const [destinations, grid, state, tz] = await Promise.all([
-      store.destinationsFor(tenantId),
-      store.scheduleFor(tenantId),
+    const [snapshot, state, tz] = await Promise.all([
+      store.snapshotFor(tenantId),
       store.stateFor(tenantId),
       query('SELECT timezone FROM tenants WHERE id = $1', [tenantId]),
     ]);
     const timezone = tz.rows[0]?.timezone ?? 'America/New_York';
 
+    const now = new Date();
+    const { current, until, next } = store.resolveUntil(snapshot, timezone, now);
+
     res.json({
-      destinations,
-      grid,
+      destinations: snapshot.destinations,
+      grid: snapshot.grid,
+      overrides: snapshot.overrides,
       timezone,
       days: store.DAYS,
-      now: store.currentCell(timezone),
+      now: store.currentCell(timezone, now),
+      // The countdown ticks in the browser, but off the server's clock: a
+      // laptop several minutes out would otherwise show a shift ending at the
+      // wrong time, which is exactly the thing being relied on.
+      serverNow: now.toISOString(),
+      current: current ?? null,
+      until: until ? until.toISOString() : null,
+      next: next ?? null,
       // What the phone system is actually set to, which is not always what the
       // grid says — the engine may not have caught up, or may have failed.
       applied: state ? {
@@ -163,14 +183,120 @@ scheduleRouter.put('/grid', async (req, res, next) => {
       result: 'ok', ip: req.ip,
     });
 
-    // Apply straight away rather than leaving the phone system up to a minute
-    // behind what the customer just saved and is looking at.
-    const { rows } = await query(
-      `SELECT t.id, t.name, t.ns_domain, t.main_extension, t.timezone, s.applied_target
-         FROM tenants t LEFT JOIN tenant_schedule_state s ON s.tenant_id = t.id
-        WHERE t.id = $1`, [req.session.tenant_id]);
-    const result = rows[0] ? await applyForTenant(rows[0]) : null;
+    res.json({ ok: true, applied: await applyNow(req.session.tenant_id) });
+  } catch (err) { next(err); }
+});
 
-    res.json({ ok: true, applied: result });
+/* ------------------------------------------------------------- overrides */
+
+// An override is deliberately short-lived: it exists so nobody has to edit the
+// week for one afternoon and remember to change it back. A year-long one would
+// be a schedule, and a silently permanent one is the failure mode worth
+// designing out.
+const MAX_OVERRIDE_DAYS = 31;
+const MAX_AHEAD_DAYS = 180;
+
+const instant = z.string().datetime({ offset: true });
+
+scheduleRouter.get('/overrides', async (req, res, next) => {
+  try {
+    res.json({
+      overrides: await store.overridesFor(req.session.tenant_id, {
+        includePast: req.query.history === '1',
+      }),
+    });
+  } catch (err) { next(err); }
+});
+
+scheduleRouter.post('/overrides', async (req, res, next) => {
+  try {
+    const parsed = z.object({
+      destinationId: z.string().uuid().nullable().optional(),
+      startsAt: instant,
+      endsAt: instant,
+      note: z.string().max(200).optional(),
+    }).strict().safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: 'invalid_input',
+        message: 'Some values were not accepted.',
+        details: parsed.error.issues.map((i) => ({ field: i.path.join('.'), problem: i.message })),
+      });
+    }
+
+    const { destinationId = null, note } = parsed.data;
+    const startsAt = new Date(parsed.data.startsAt);
+    const endsAt = new Date(parsed.data.endsAt);
+
+    if (endsAt <= startsAt) {
+      return res.status(400).json({
+        error: 'invalid_input', message: 'The override has to end after it starts.',
+      });
+    }
+    if (endsAt - startsAt > MAX_OVERRIDE_DAYS * 86400_000) {
+      return res.status(400).json({
+        error: 'invalid_input',
+        message: `An override can cover at most ${MAX_OVERRIDE_DAYS} days. ` +
+                 'For anything longer, change the week itself.',
+      });
+    }
+    if (startsAt.getTime() - Date.now() > MAX_AHEAD_DAYS * 86400_000) {
+      return res.status(400).json({
+        error: 'invalid_input', message: 'That start date is too far ahead.',
+      });
+    }
+    if (endsAt.getTime() <= Date.now()) {
+      return res.status(400).json({
+        error: 'invalid_input', message: 'That override has already finished.',
+      });
+    }
+
+    // The destination must be this customer's own, the same check the grid
+    // gets: a crafted id must not point an hour at another customer's row.
+    let dest = null;
+    if (destinationId) {
+      dest = (await store.destinationsFor(req.session.tenant_id))
+        .find((d) => d.id === destinationId) ?? null;
+      if (!dest) {
+        return res.status(400).json({
+          error: 'invalid_input', message: 'That is not one of your dispatchers.',
+        });
+      }
+    }
+
+    const actor = actorFor(req.session);
+    const override = await store.addOverride(req.session.tenant_id, {
+      destinationId, startsAt, endsAt, note,
+      createdBy: actor.actorEmail ?? null,
+    });
+
+    await audit.record({
+      ...actor,
+      tenantId: req.session.tenant_id,
+      op: 'schedule.override.create',
+      target: `${dest ? dest.name : 'nobody'} ${startsAt.toISOString()} to ${endsAt.toISOString()}`,
+      after: { destination: dest?.name ?? null, target: dest?.target ?? null, note: note ?? null },
+      result: 'ok', ip: req.ip,
+    });
+
+    res.status(201).json({ ok: true, override, applied: await applyNow(req.session.tenant_id) });
+  } catch (err) { next(err); }
+});
+
+scheduleRouter.delete('/overrides/:id', async (req, res, next) => {
+  try {
+    const removed = await store.removeOverride(req.session.tenant_id, req.params.id);
+    if (!removed) return res.status(404).json({ error: 'not_found', message: 'No such override.' });
+
+    await audit.record({
+      ...actorFor(req.session),
+      tenantId: req.session.tenant_id,
+      op: 'schedule.override.delete',
+      result: 'ok', ip: req.ip,
+    });
+
+    // Cancelling an override has to put the week back straight away — the
+    // customer cancelled it because calls are going to the wrong person now.
+    res.json({ ok: true, applied: await applyNow(req.session.tenant_id) });
   } catch (err) { next(err); }
 });

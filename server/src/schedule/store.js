@@ -76,6 +76,155 @@ export async function setSchedule(tenantId, grid) {
   });
 }
 
+/* ------------------------------------------------------------- overrides */
+
+export async function overridesFor(tenantId, { includePast = false } = {}) {
+  const { rows } = await query(
+    `SELECT o.id, o.destination_id, o.starts_at, o.ends_at, o.note, o.created_by,
+            d.name AS destination_name, d.target, d.colour
+       FROM tenant_overrides o
+       LEFT JOIN tenant_destinations d ON d.id = o.destination_id
+      WHERE o.tenant_id = $1 AND ($2 OR o.ends_at > now())
+      ORDER BY o.starts_at`,
+    [tenantId, includePast]);
+  return rows;
+}
+
+export async function addOverride(tenantId, { destinationId, startsAt, endsAt, note, createdBy }) {
+  const { rows } = await query(
+    `INSERT INTO tenant_overrides
+       (tenant_id, destination_id, starts_at, ends_at, note, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     RETURNING id, destination_id, starts_at, ends_at, note`,
+    [tenantId, destinationId ?? null, startsAt, endsAt, note ?? null, createdBy ?? null]);
+  return rows[0];
+}
+
+export async function removeOverride(tenantId, id) {
+  const { rowCount } = await query(
+    'DELETE FROM tenant_overrides WHERE tenant_id = $1 AND id = $2', [tenantId, id]);
+  return rowCount > 0;
+}
+
+/**
+ * Everything needed to answer "who is on, and until when", in one read.
+ *
+ * The countdown has to look ahead across a week, and doing that with a query
+ * per hour was 300-odd round trips for one page load. Read once, decide in
+ * memory.
+ */
+export async function snapshotFor(tenantId) {
+  const [destinations, grid, overrides] = await Promise.all([
+    destinationsFor(tenantId),
+    scheduleFor(tenantId),
+    overridesFor(tenantId),
+  ]);
+  return { destinations, grid, overrides };
+}
+
+/**
+ * What should be live at an instant: an override if one covers it, otherwise
+ * the weekly grid. The one place that decides, so the engine and the countdown
+ * the customer is reading cannot disagree about who is on.
+ *
+ * Returns null for "nothing scheduled — leave the phone system alone".
+ */
+export function resolveAt(snapshot, timezone, at) {
+  const t = at.getTime();
+
+  // The latest-starting override wins, so "and actually, until four" said
+  // after "until six" does what the customer meant.
+  let winner = null;
+  for (const o of snapshot.overrides) {
+    const from = new Date(o.starts_at).getTime();
+    const to = new Date(o.ends_at).getTime();
+    if (from <= t && t < to && (!winner || from >= new Date(winner.starts_at).getTime())) {
+      winner = o;
+    }
+  }
+  if (winner) {
+    return {
+      target: winner.destination_id ? winner.target : null,
+      name: winner.destination_id ? winner.destination_name : null,
+      colour: winner.colour ?? null,
+      source: winner.destination_id ? 'override' : 'override-none',
+      endsAt: winner.ends_at,
+      overrideId: winner.id,
+      note: winner.note ?? null,
+    };
+  }
+
+  const { day, hour } = currentCell(timezone, at);
+  if (day < 0) return null;
+
+  const id = snapshot.grid[day]?.[hour] ?? null;
+  const dest = id ? snapshot.destinations.find((d) => d.id === id) : null;
+  if (!dest) return null;
+
+  return {
+    target: dest.target,
+    name: dest.name,
+    colour: dest.colour,
+    source: 'schedule',
+    destinationId: dest.id,
+    day,
+    hour,
+  };
+}
+
+/**
+ * When the current destination stops being current, and who takes over.
+ *
+ * Checks every hour boundary in the coming week plus every moment an override
+ * starts or ends — an override need not begin on the hour, and a countdown
+ * that ignored that would tell someone they were on for another 40 minutes
+ * when their cover started in 10. Bounded to a week; past that "no change
+ * scheduled" is the honest answer.
+ */
+export function resolveUntil(snapshot, timezone, from = new Date()) {
+  const current = resolveAt(snapshot, timezone, from);
+  const currentTarget = current?.target ?? null;
+  const horizon = from.getTime() + 7 * 24 * 3600_000;
+
+  const marks = new Set();
+  const first = nextLocalHour(timezone, from).getTime();
+  for (let i = 0; i < 24 * 7; i++) marks.add(first + i * 3600_000);
+  for (const o of snapshot.overrides) {
+    for (const stamp of [new Date(o.starts_at).getTime(), new Date(o.ends_at).getTime()]) {
+      if (stamp > from.getTime() && stamp <= horizon) marks.add(stamp);
+    }
+  }
+
+  for (const stamp of [...marks].sort((a, b) => a - b)) {
+    const at = new Date(stamp);
+    const next = resolveAt(snapshot, timezone, at);
+    if ((next?.target ?? null) !== currentTarget) return { current, until: at, next };
+  }
+  return { current, until: null, next: null };
+}
+
+// The next time the grid can move: the top of the hour on the CUSTOMER's
+// clock. Rounding on the server's clock instead is right in New York and wrong
+// in Kolkata, whose hours turn at half past the UTC hour.
+function nextLocalHour(timezone, from) {
+  const p = {};
+  new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone, minute: '2-digit', second: '2-digit', hour12: false,
+  }).formatToParts(from).forEach((x) => { p[x.type] = x.value; });
+
+  const into = Number(p.minute) * 60_000 + Number(p.second) * 1000 + from.getMilliseconds();
+  return new Date(from.getTime() + 3600_000 - into);
+}
+
+/** The same answer, for a caller that has no snapshot in hand. */
+export async function effectiveAt(tenantId, timezone, at = new Date()) {
+  return resolveAt(await snapshotFor(tenantId), timezone, at);
+}
+
+export async function effectiveUntil(tenantId, timezone, from = new Date()) {
+  return resolveUntil(await snapshotFor(tenantId), timezone, from);
+}
+
 export async function stateFor(tenantId) {
   const { rows } = await query(
     `SELECT applied_target, applied_at, last_error, last_attempt

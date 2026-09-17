@@ -286,3 +286,65 @@ table.sched td.cell.now{outline:2px solid var(--warn);outline-offset:-2px;z-inde
 }
 .applied b{color:var(--text);}
 .applied-stale{border-color:color-mix(in srgb,var(--warn) 40%,transparent);}
+
+/* ---- who is on right now ------------------------------------------------
+   The one thing someone glancing at this page is here for, so it gets the
+   top of the screen and the only accent-tinted card. */
+.on-now{
+  border-color:color-mix(in srgb,var(--accent) 35%,var(--border));
+  background:linear-gradient(180deg,var(--accent-soft),transparent 70%),var(--surface);
+}
+.on-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;}
+.on-head b{font-size:19px;letter-spacing:-.01em;}
+.on-dot{width:13px;height:13px;border-radius:5px;flex-shrink:0;}
+.on-dot-none{background:var(--muted);opacity:.45;}
+.on-target{font-size:13px;color:var(--muted);}
+.on-left{margin-top:7px;font-size:14px;color:var(--muted);}
+.on-left b{color:var(--text);font-variant-numeric:tabular-nums;}
+.on-next{margin-top:2px;font-size:13px;color:var(--muted);}
+.on-next b{color:var(--text);}
+.on-now-empty{background:var(--surface);border-color:var(--border);}
+
+.tag{
+  font-size:10.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+  padding:2px 7px;border-radius:999px;white-space:nowrap;
+  background:var(--surface-2);color:var(--muted);border:1px solid var(--border);
+}
+.tag-override{
+  background:color-mix(in srgb,var(--warn) 14%,transparent);
+  color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,transparent);
+}
+.tag-live{
+  background:color-mix(in srgb,var(--ok) 14%,transparent);
+  color:var(--ok);border-color:color-mix(in srgb,var(--ok) 35%,transparent);
+}
+.dest-on{border-color:color-mix(in srgb,var(--ok) 45%,var(--border));}
+
+/* ---- temporary overrides ---- */
+.ovr-form{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;}
+.ovr-form label{
+  display:flex;flex-direction:column;gap:4px;flex:1 1 170px;min-width:150px;
+  font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;
+}
+.ovr-form .btn{flex:0 0 auto;}
+.ovr-quick{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:10px;}
+.quick{
+  background:var(--surface-2);color:var(--muted);border:1px solid var(--border);
+  border-radius:7px;padding:4px 10px;font-family:inherit;font-size:12.5px;cursor:pointer;
+}
+.quick:hover{color:var(--text);border-color:var(--text);}
+
+.ovr-list{list-style:none;margin:14px 0 0;padding:0;display:flex;flex-direction:column;gap:8px;}
+.ovr{
+  display:flex;align-items:center;gap:10px;padding:9px 11px;
+  background:var(--surface-2);border:1px solid var(--border);border-radius:10px;
+}
+.ovr-live{border-color:color-mix(in srgb,var(--ok) 45%,transparent);}
+.ovr-body{flex:1 1 auto;min-width:0;font-size:13.5px;}
+.ovr-when{display:block;font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;}
+.ovr-note{display:block;font-size:11.5px;color:var(--muted);font-style:italic;}
+
+@media (max-width:640px){
+  .ovr-form label{flex:1 1 100%;}
+  .ovr-form .btn{width:100%;}
+}

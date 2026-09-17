@@ -9,7 +9,7 @@ import { logger } from '../logger.js';
 import { nsRequest, NsError } from '../netsapiens/client.js';
 import * as audit from '../audit.js';
 import { featuresFor } from '../tenant-features.js';
-import { currentCell, recordApplied, DAYS } from './store.js';
+import { effectiveAt, recordApplied, DAYS } from './store.js';
 
 // The time frame the engine owns. Everything outside it is the customer's own
 // business and is never touched.
@@ -25,18 +25,22 @@ async function tenantsToApply() {
   return rows;
 }
 
+// What the schedule says should be live right now. An override covering this
+// instant wins over the weekly grid; store.effectiveAt is the single place that
+// decides, so the engine and the countdown the customer is reading cannot
+// disagree about who is on.
 async function desiredTarget(tenantId, timezone) {
-  const { day, hour } = currentCell(timezone);
-  if (day < 0) return null;
+  const eff = await effectiveAt(tenantId, timezone);
+  return eff?.target ? eff : null;
+}
 
-  const { rows } = await query(
-    `SELECT d.target, d.name
-       FROM tenant_schedule s
-       JOIN tenant_destinations d ON d.id = s.destination_id
-      WHERE s.tenant_id = $1 AND s.day_of_week = $2 AND s.hour_of_day = $3`,
-    [tenantId, day, hour]);
-
-  return rows[0] ? { ...rows[0], day, hour } : null;
+// How the change is described in the audit trail: an override says so, because
+// "why did calls move at 2pm on a Tuesday" is the question the trail answers.
+function describeChange(desired) {
+  if (desired.source === 'override') {
+    return `override until ${new Date(desired.endsAt).toISOString()} -> ${desired.name}`;
+  }
+  return `${DAYS[desired.day]} ${String(desired.hour).padStart(2, '0')}:00 -> ${desired.name}`;
 }
 
 /**
@@ -50,8 +54,9 @@ export async function applyForTenant(tenant) {
 
   const desired = await desiredTarget(tenant.id, tenant.timezone);
 
-  // No destination for this hour means the customer deliberately left it
-  // unassigned. Leaving the phone system alone is the whole point of that.
+  // No destination for this hour — either the grid leaves it unassigned or an
+  // override deliberately points at nobody. Leaving the phone system alone is
+  // the whole point of both.
   if (!desired) return { tenant: tenant.name, skipped: 'hour unassigned' };
 
   // Already there. Rewriting an unchanged rule every hour would be noise in
@@ -78,7 +83,7 @@ export async function applyForTenant(tenant) {
       actorEmail: null,
       nsDomain: tenant.ns_domain,
       op: 'schedule.apply',
-      target: `${DAYS[desired.day]} ${String(desired.hour).padStart(2, '0')}:00 -> ${desired.name}`,
+      target: describeChange(desired),
       before: { target: tenant.applied_target ?? null },
       after: { target: desired.target },
       result: 'ok',
