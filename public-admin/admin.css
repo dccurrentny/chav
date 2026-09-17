@@ -97,6 +97,16 @@ tr:last-child td{border-bottom:none;}
 tbody tr:hover{background:var(--surface-2);}
 td.actions{text-align:right;white-space:nowrap;}
 td.actions button{margin-left:6px;}
+/* Below this the row actions wrap under the row rather than running off the
+   side of the dialog. */
+@media (max-width:640px){
+  .modal table, .modal thead, .modal tbody, .modal tr, .modal td, .modal th{display:block;}
+  .modal thead{display:none;}
+  .modal tbody tr{padding:10px 0;border-bottom:1px solid var(--border);}
+  .modal td{padding:2px 0;border:none;}
+  .modal td.actions{text-align:left;margin-top:8px;white-space:normal;}
+  .modal td.actions button{margin:0 6px 6px 0;}
+}
 
 .pill{
   font-family:var(--mono);font-size:10px;letter-spacing:.04em;text-transform:uppercase;
@@ -131,6 +141,9 @@ input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--a
 /* ---------- modal ---------- */
 .veil{position:fixed;inset:0;background:rgba(6,9,14,.72);display:flex;align-items:center;justify-content:center;padding:16px;z-index:40;}
 .modal{background:var(--surface);border:1px solid var(--border);border-radius:13px;padding:22px;width:100%;max-width:460px;max-height:88vh;overflow-y:auto;}
+/* A dialog holding a table of rows with per-row actions needs the room, or the
+   action buttons sit outside the dialog and simply cannot be seen. */
+.modal.wide{max-width:780px;}
 .modal h3{margin:0 0 4px;font-size:16px;font-weight:600;}
 .modal .sub{color:var(--muted);font-size:12.5px;margin:0 0 17px;}
 

@@ -62,12 +62,12 @@
     if (v) v.remove();
   }
 
-  function modal(title, sub, bodyHtml, onMount) {
+  function modal(title, sub, bodyHtml, onMount, opts) {
     closeModal();
     var veil = document.createElement('div');
     veil.className = 'veil';
     veil.innerHTML =
-      '<div class="modal" role="dialog" aria-modal="true">' +
+      '<div class="modal' + (opts && opts.wide ? ' wide' : '') + '" role="dialog" aria-modal="true">' +
         '<h3>' + h(title) + '</h3>' +
         (sub ? '<p class="sub">' + h(sub) + '</p>' : '') +
         bodyHtml +
@@ -354,7 +354,8 @@
   /* -------------------------------------------------------------- users */
 
   async function usersModal(t) {
-    modal('Users — ' + t.name, t.hostname, '<div class="empty">Loading…</div>');
+    modal('Users — ' + t.name, t.hostname || 'shared portal',
+      '<div class="empty">Loading…</div>', null, { wide: true });
     try {
       var d = await api('/tenants/' + t.id + '/users');
       var body =
@@ -387,7 +388,7 @@
         '<div class="row-end"><button class="btn-ghost" id="mc">Close</button>' +
           '<button class="btn" id="madd">Add user</button></div>';
 
-      modal('Users — ' + t.name, t.hostname, body, function (veil) {
+      modal('Users — ' + t.name, t.hostname || 'shared portal', body, function (veil) {
         veil.querySelector('#mc').addEventListener('click', closeModal);
 
         veil.querySelector('#madd').addEventListener('click', async function () {
@@ -440,7 +441,7 @@
             } catch (err) { formError(veil, err); }
           });
         });
-      });
+      }, { wide: true });
     } catch (err) {
       modal('Users — ' + t.name, t.hostname,
         '<div class="alert alert-err">' + h(err.message) + '</div>' +
