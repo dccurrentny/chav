@@ -95,7 +95,15 @@ adminRouter.get('/tenants', async (_req, res, next) => {
               (SELECT max(at) FROM audit_log a WHERE a.tenant_id = t.id) AS last_activity
          FROM tenants t
         ORDER BY t.name`);
-    res.json({ tenants: rows });
+
+    // A hostname set before it became reserved still sits in the row, but the
+    // shared portal and the console are matched first, so it routes nowhere.
+    // Showing it without saying so is worse than not showing it at all.
+    const tenants = rows.map((t) => ({
+      ...t,
+      hostname_shadowed: Boolean(t.hostname && isReservedHostname(t.hostname)),
+    }));
+    res.json({ tenants });
   } catch (err) { next(err); }
 });
 

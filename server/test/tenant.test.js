@@ -124,3 +124,18 @@ test('requireTenant admits the shared portal but not an unknown host', async () 
   assert.equal(unknown, false);
   assert.equal(res.statusCode, 404);
 });
+
+test('a hostname that is now reserved is reported as not in use', async () => {
+  // A customer can hold an address that predates the shared portal. The
+  // shared check runs first, so the address routes nowhere — the console has
+  // to say so rather than display it as though it works.
+  const src = await import('node:fs/promises')
+    .then((fs) => fs.readFile(new URL('../src/admin/manage.js', import.meta.url), 'utf8'));
+  assert.match(src, /hostname_shadowed/,
+    'the tenant list does not flag a shadowed hostname');
+
+  const ui = await import('node:fs/promises')
+    .then((fs) => fs.readFile(new URL('../../public-admin/admin.js', import.meta.url), 'utf8'));
+  assert.match(ui, /hostname_shadowed/,
+    'the console does not surface a shadowed hostname');
+});

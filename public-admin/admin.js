@@ -260,7 +260,10 @@
     return '<tr>' +
       '<td>' + sw + h(t.name) + '</td>' +
       '<td class="host">' + (t.hostname
-        ? h(t.hostname)
+        ? (t.hostname_shadowed
+            ? h(t.hostname) + '<br><span style="color:var(--crit);font-size:10px">' +
+              'not in use — this is the shared portal</span>'
+            : h(t.hostname))
         : '<span style="opacity:.65">shared portal</span>') + '</td>' +
       '<td class="host">' + h(t.ns_domain) + '</td>' +
       '<td class="host">' + (t.main_extension
@@ -294,7 +297,13 @@
         '" placeholder="leave blank to use the shared portal">' +
         '<div style="font-size:11.5px;color:var(--muted);margin-top:5px">' +
         'Blank means they sign in at the shared portal with everyone else. ' +
-        'Give an address only if this customer wants their own.</div></div>' +
+        'Give an address only if this customer wants their own.</div>' +
+        (editing && t.hostname_shadowed
+          ? '<div class="alert alert-err" style="margin-top:8px">That address is the ' +
+            'shared portal, so it does not route to this customer. Clear it to use ' +
+            'the shared portal, or give them an address of their own.</div>'
+          : '') +
+      '</div>' +
       '<div class="grid2">' +
         '<div class="field"><label for="f_ns">SkySwitch domain</label>' +
           '<input id="f_ns" value="' + h(editing ? t.ns_domain : '') + '" placeholder="acme.yourdomain.com"></div>' +
