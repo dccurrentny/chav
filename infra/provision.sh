@@ -10,6 +10,7 @@
 set -euo pipefail
 
 APP_USER="portal"
+DEPLOY_USER="deploy"
 APP_DIR="/opt/chav"
 DB_NAME="portal"
 DB_USER="portal"
@@ -93,15 +94,75 @@ if [[ ! -f /etc/portal/portal.env ]]; then
   echo "!! Edit /etc/portal/portal.env and fill in the NS_* SkySwitch credentials."
 fi
 
+log "Deploy user"
+# CI signs in as this account to deploy. It is deliberately NOT the service
+# account: the service should not be able to rewrite its own code, and an
+# unattended SSH key should not reach the service's environment.
+if ! id -u "$DEPLOY_USER" >/dev/null 2>&1; then
+  useradd --create-home --shell /bin/bash "$DEPLOY_USER"
+  # No password is ever set, so the account is reachable by key only.
+  passwd -l "$DEPLOY_USER" >/dev/null
+fi
+install -d -m 700 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "/home/${DEPLOY_USER}/.ssh"
+AUTH_KEYS="/home/${DEPLOY_USER}/.ssh/authorized_keys"
+[[ -f "$AUTH_KEYS" ]] || install -m 600 -o "$DEPLOY_USER" -g "$DEPLOY_USER" /dev/null "$AUTH_KEYS"
+
+# Pass DEPLOY_PUBKEY=... to install the CI key without editing files by hand.
+# Appended only if absent, so re-running does not accumulate duplicates.
+if [[ -n "${DEPLOY_PUBKEY:-}" ]]; then
+  grep -qxF "$DEPLOY_PUBKEY" "$AUTH_KEYS" 2>/dev/null || echo "$DEPLOY_PUBKEY" >> "$AUTH_KEYS"
+  echo "Deploy key installed for ${DEPLOY_USER}."
+else
+  echo "!! No DEPLOY_PUBKEY given. Add the CI public key to"
+  echo "   $AUTH_KEYS before enabling the deploy workflow."
+fi
+
+log "Migration wrapper"
+# DATABASE_URL lives only in /etc/portal/db.env, which the deploy user cannot
+# read. Rather than widen that file's permissions, migrations run through one
+# fixed root-owned command.
+install -m 755 -o root -g root "${APP_DIR}/infra/portal-migrate" /usr/local/bin/portal-migrate
+
+log "Deploy privileges"
+# Exactly three commands, each matched in full — sudo compares the whole
+# command line, so `systemctl restart portal` does not also permit
+# `systemctl restart anything-else`. Validated before installing: a malformed
+# sudoers file can lock everyone out of sudo on the box.
+SUDOERS_TMP="$(mktemp)"
+cat > "$SUDOERS_TMP" <<EOF
+${DEPLOY_USER} ALL=(root) NOPASSWD: /usr/local/bin/portal-migrate, \
+/usr/bin/systemctl restart portal, \
+/usr/bin/systemctl is-active portal
+EOF
+if visudo -cf "$SUDOERS_TMP" >/dev/null; then
+  install -m 440 -o root -g root "$SUDOERS_TMP" "/etc/sudoers.d/${DEPLOY_USER}"
+else
+  rm -f "$SUDOERS_TMP"
+  echo "refusing to install a sudoers file that does not parse" >&2
+  exit 1
+fi
+rm -f "$SUDOERS_TMP"
+
 log "Application directory"
-# Deployed code stays root-owned and world-readable. The service only needs to
-# READ it, and handing the checkout to the service account breaks `git pull`
-# for whoever administers the box — git refuses to operate on a repository
-# owned by someone else. It would break the CI deploy for the same reason.
-install -d -o root -g root -m 755 "$APP_DIR"
-# Recursive, so a checkout left owned by the service account by an earlier
+# Owned by the deploy user, readable by the service through the shared group.
+#
+# It cannot be root-owned: git refuses to operate on a repository owned by
+# someone else, so the CI deploy's `git fetch` would fail with "dubious
+# ownership". It must not be owned by the SERVICE account either — the portal
+# should not be able to rewrite its own code. The deploy user owns it, the
+# service reads it, and each has only what it needs.
+#
+# It stays world-readable. Caddy serves public/ and public-admin/ straight out
+# of here as the `caddy` user, so locking the tree to one group takes both
+# sites down. Nothing secret lives in the repo — secrets are in /etc/portal,
+# which is 750 root:portal.
+install -d -o "$DEPLOY_USER" -g "$APP_USER" -m 755 "$APP_DIR"
+# Recursive, so a checkout left root-owned or service-owned by an earlier
 # version of this script is repaired on the next run.
-chown -R root:root "$APP_DIR"
+chown -R "$DEPLOY_USER":"$APP_USER" "$APP_DIR"
+# Directories need +x to be traversed; files only need read. -X makes exactly
+# that distinction.
+chmod -R a+rX "$APP_DIR"
 
 log "systemd unit"
 cp "${APP_DIR}/infra/systemd/portal.service" /etc/systemd/system/portal.service

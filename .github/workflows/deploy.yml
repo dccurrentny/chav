@@ -1,17 +1,14 @@
 name: Deploy portal
 
-# Deliberately NOT on push to main yet. Three things this needs do not exist:
-# the `deploy` user it logs in as (provision.sh does not create one), the
-# DEPLOY_HOST and DEPLOY_SSH_KEY secrets, and the DATABASE_URL fix its migrate
-# step needs — see RUNBOOK.md. Wired to push before all that is done, every
-# merge to main goes red, and a half-working SSH would leave the droplet on new
-# code with the service never restarted.
-#
-# When the deploy user and secrets are in place, restore:
-#   push:
-#     branches: [main]
-#     paths: ['server/**', 'infra/**', '.github/workflows/deploy.yml']
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'infra/**'
+      - 'public/**'
+      - 'public-admin/**'
+      - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
 concurrency:
@@ -46,25 +43,46 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: deploy
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script_stop: true
+          # Not script_stop: that aborts at the first failing command, which
+          # skips the rollback below and leaves the droplet halfway through a
+          # deploy. The trap handles failures instead.
+          script_stop: false
           script: |
             set -euo pipefail
-            cd /opt/chav
 
-            # Record where we are so the health gate below can roll back.
+            cd /opt/chav
             PREVIOUS="$(git rev-parse HEAD)"
             echo "current revision: $PREVIOUS"
+
+            # Any failure from here on puts the droplet back where it was.
+            # Reached by the trap on an error and by the health gate below,
+            # so there is one rollback path rather than two.
+            roll_back() {
+              echo "::error::deploy failed — rolling back to $PREVIOUS"
+              cd /opt/chav
+              git reset --hard "$PREVIOUS"
+              (cd server && npm ci --omit=dev) || true
+              sudo /usr/bin/systemctl restart portal || true
+              exit 1
+            }
+            trap roll_back ERR
 
             git fetch --quiet origin main
             git reset --hard origin/main
 
             cd server
             npm ci --omit=dev
-            npm run migrate
 
-            sudo systemctl restart portal
+            # DATABASE_URL is only in /etc/portal/db.env, which this user
+            # cannot read. One fixed root-owned command, named in sudoers.
+            sudo /usr/local/bin/portal-migrate
 
-            # Health gate: give it 30s to come up, roll back if it does not.
+            sudo /usr/bin/systemctl restart portal
+
+            # Past this point a failure is the health gate's to report, and the
+            # trap would fire on the loop's own non-zero curl.
+            trap - ERR
+
             for i in $(seq 1 30); do
               if curl -fsS --max-time 2 http://127.0.0.1:3000/readyz >/dev/null 2>&1; then
                 echo "healthy after ${i}s"
@@ -73,9 +91,5 @@ jobs:
               sleep 1
             done
 
-            echo "::error::portal did not become healthy — rolling back to $PREVIOUS"
-            cd /opt/chav
-            git reset --hard "$PREVIOUS"
-            cd server && npm ci --omit=dev
-            sudo systemctl restart portal
-            exit 1
+            echo "::error::portal did not become healthy in 30s"
+            roll_back

@@ -1,0 +1,20 @@
+#!/bin/sh
+# Run the database migrations as root, with the database credentials.
+#
+# This exists so the deploy user does not need to read /etc/portal/db.env.
+# DATABASE_URL lives only in that file, handed to the service by systemd's
+# EnvironmentFile, so a plain shell does not have it and `npm run migrate`
+# exits immediately without this.
+#
+# Installed by provision.sh to /usr/local/bin/portal-migrate, root-owned, and
+# named exactly in /etc/sudoers.d/deploy. Keep it a fixed command with no
+# arguments: sudo matches the whole command line, so there is nothing here for
+# a caller to influence.
+set -eu
+
+# shellcheck disable=SC1091  # written by provision.sh at runtime
+. /etc/portal/db.env
+export DATABASE_URL
+
+cd /opt/chav/server
+exec /usr/bin/npm run migrate
