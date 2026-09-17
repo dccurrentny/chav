@@ -7,6 +7,8 @@ import { hashPassword } from '../auth/password.js';
 import { requireStaff, requireOwner, requireStaffCsrf } from './middleware.js';
 import { destroyAllStaffSessions } from './session.js';
 import { _clearTenantCache, isReservedHostname } from '../tenant.js';
+import { FEATURES, FEATURE_NAMES, withDependencies } from '../features.js';
+import { featuresFor, setFeatures, enableDefaults } from '../tenant-features.js';
 import { createGrant, impersonationUrl, IMPERSONATION_TTL_MINUTES } from './impersonate.js';
 import {
   describeNsSettings, describeTelcoSettings, setSettings,
@@ -144,6 +146,9 @@ adminRouter.post('/tenants', async (req, res, next) => {
        t.support_email ?? null, t.support_phone ?? null, t.main_extension ?? null],
     );
     _clearTenantCache();
+    // A new customer starts with the defaults rather than an empty portal.
+    await enableDefaults(rows[0].id, req.staff.staff_id);
+
     await log(req, { tenantId: rows[0].id, op: 'staff.tenant.create', target: t.hostname,
                      params: t, after: t, result: 'ok' });
     res.status(201).json({ ok: true, id: rows[0].id });
@@ -220,6 +225,46 @@ adminRouter.post('/tenants/:id/status', async (req, res, next) => {
     await log(req, { tenantId: req.params.id, op: 'staff.tenant.status',
                      target: rows[0].hostname, after: { status: rows[0].status }, result: 'ok' });
     res.json({ ok: true, status: rows[0].status });
+  } catch (err) { next(err); }
+});
+
+/* ------------------------------------------------------ per-customer features */
+
+adminRouter.get('/features', async (_req, res, next) => {
+  try {
+    // The catalogue, so the console does not carry its own copy of it.
+    res.json({
+      features: FEATURE_NAMES.map((name) => ({
+        name,
+        label: FEATURES[name].label,
+        blurb: FEATURES[name].blurb,
+        requires: FEATURES[name].requires ?? [],
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
+adminRouter.get('/tenants/:id/features', async (req, res, next) => {
+  try {
+    res.json({ enabled: await featuresFor(req.params.id) });
+  } catch (err) { next(err); }
+});
+
+adminRouter.put('/tenants/:id/features', async (req, res, next) => {
+  try {
+    const parsed = z.object({
+      features: z.array(z.string().max(64)).max(64),
+    }).strict().safeParse(req.body ?? {});
+    if (!parsed.success) return bad(res, parsed.error.issues);
+
+    const before = await featuresFor(req.params.id);
+    const enabled = await setFeatures(req.params.id, parsed.data.features, req.staff.staff_id);
+
+    await log(req, {
+      tenantId: req.params.id, op: 'staff.tenant.features',
+      before: { features: before }, after: { features: enabled }, result: 'ok',
+    });
+    res.json({ ok: true, enabled });
   } catch (err) { next(err); }
 });
 

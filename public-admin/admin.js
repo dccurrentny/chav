@@ -240,6 +240,11 @@
           tenantForm(state.tenants.find(function (t) { return t.id === b.dataset.edit; }));
         });
       });
+      panel().querySelectorAll('[data-feat]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          featuresModal(state.tenants.find(function (x) { return x.id === b.dataset.feat; }));
+        });
+      });
       panel().querySelectorAll('[data-api]').forEach(function (b) {
         b.addEventListener('click', function () {
           credentialsModal(state.tenants.find(function (x) { return x.id === b.dataset.api; }));
@@ -283,6 +288,7 @@
       '<td class="num">' + h(when(t.last_activity)) + '</td>' +
       '<td>' + pill(t.status) + '</td>' +
       '<td class="actions">' +
+        '<button class="btn-ghost" data-feat="' + h(t.id) + '">Portal setup</button>' +
         '<button class="btn-ghost" data-api="' + h(t.id) + '">API access</button>' +
         '<button class="btn-ghost" data-preview="' + h(t.id) + '">Open portal</button>' +
         '<button class="btn-ghost" data-users="' + h(t.id) + '">Users</button>' +
@@ -291,6 +297,72 @@
           '" data-status="' + h(t.id) + '" data-to="' + flip + '">' +
           (t.status === 'active' ? 'Suspend' : 'Reactivate') + '</button>' +
       '</td></tr>';
+  }
+
+  // Which parts of the portal this customer gets. Customers want different
+  // things, so each one's portal is assembled rather than assumed.
+  async function featuresModal(t) {
+    modal('Portal setup — ' + t.name, t.ns_domain,
+      '<div class="empty">Loading…</div>', null, { wide: true });
+    try {
+      var got = await Promise.all([api('/features'), api('/tenants/' + t.id + '/features')]);
+      var catalogue = got[0].features;
+      var enabled = got[1].enabled;
+
+      var body =
+        '<p class="desc">What this customer sees when they sign in. Anything off is ' +
+        'refused by the server too, not just hidden.</p>' +
+        '<div class="alert form-err" hidden></div>' +
+        catalogue.map(function (f) {
+          var on = enabled.indexOf(f.name) !== -1;
+          var needs = f.requires.length
+            ? ' <span style="opacity:.6">— needs ' +
+              h(f.requires.map(function (r) {
+                var m = catalogue.filter(function (c) { return c.name === r; })[0];
+                return m ? m.label : r;
+              }).join(', ')) + '</span>'
+            : '';
+          return '<label style="display:flex;gap:10px;align-items:flex-start;' +
+            'padding:11px 0;border-bottom:1px solid var(--border);cursor:pointer">' +
+            '<input type="checkbox" id="ft_' + h(f.name) + '" ' + (on ? 'checked ' : '') +
+              'style="width:auto;margin-top:3px;flex-shrink:0">' +
+            '<span><span style="font-weight:600;color:var(--text)">' + h(f.label) + '</span>' +
+              needs + '<br><span style="font-size:12px;color:var(--muted)">' +
+              h(f.blurb) + '</span></span></label>';
+        }).join('') +
+        '<div class="row-end" style="margin-top:14px">' +
+          '<button class="btn-ghost" id="ftCancel">Cancel</button>' +
+          '<button class="btn" id="ftSave">Save</button>' +
+        '</div>' +
+        '<div id="ftResult" style="margin-top:12px"></div>';
+
+      modal('Portal setup — ' + t.name, t.ns_domain, body, function (veil) {
+        veil.querySelector('#ftCancel').addEventListener('click', closeModal);
+        veil.querySelector('#ftSave').addEventListener('click', async function () {
+          var want = catalogue.filter(function (f) {
+            var el = document.getElementById('ft_' + f.name);
+            return el && el.checked;
+          }).map(function (f) { return f.name; });
+          var btn = veil.querySelector('#ftSave');
+          btn.disabled = true; btn.textContent = 'Saving…';
+          try {
+            var out = await api('/tenants/' + t.id + '/features',
+              { method: 'PUT', body: { features: want } });
+            // Dependencies are added server-side, so reopen to show the truth.
+            closeModal();
+            featuresModal(t);
+          } catch (err) {
+            btn.disabled = false; btn.textContent = 'Save';
+            formError(veil, err);
+          }
+        });
+      }, { wide: true });
+    } catch (err) {
+      modal('Portal setup — ' + t.name, t.ns_domain,
+        '<div class="alert alert-err">' + h(err.message) + '</div>' +
+        '<div class="row-end"><button class="btn" id="mc">Close</button></div>',
+        function (v) { v.querySelector('#mc').addEventListener('click', closeModal); }, { wide: true });
+    }
   }
 
 // Only the Subscriber varies per customer. The client ID and secret identify

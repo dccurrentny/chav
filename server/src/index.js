@@ -11,6 +11,8 @@ import { auditRouter } from './routes/audit.js';
 import { healthRouter } from './routes/health.js';
 import { brandingRouter, internalRouter } from './routes/branding.js';
 import { impersonateRouter } from './routes/impersonate.js';
+import { scheduleRouter } from './routes/schedule.js';
+import { startEngine } from './schedule/engine.js';
 import { resolveTenant, requireTenant } from './tenant.js';
 import { adminAuthRouter } from './admin/auth.js';
 import { adminRouter } from './admin/manage.js';
@@ -66,6 +68,7 @@ app.use('/api', brandingRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/ns', requireTenant, nsRouter);
 app.use('/api/audit', requireTenant, auditRouter);
+app.use('/api/schedule', requireTenant, scheduleRouter);
 
 app.use('/api', (_req, res) => {
   res.status(404).json({ error: 'not_found', message: 'No such endpoint.' });
@@ -85,6 +88,8 @@ app.use((err, req, res, _next) => {
 
 const server = app.listen(config.PORT, '127.0.0.1', () => {
   logger.info({ port: config.PORT, env: config.NODE_ENV }, 'portal api listening');
+  // Applies each customer's schedule as the hours turn.
+  startEngine();
 });
 
 // Expired sessions accumulate forever otherwise.

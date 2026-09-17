@@ -7,6 +7,7 @@ import { verifyPassword } from './password.js';
 import { createSession, destroySession, cookieOptions, COOKIE_NAME } from './session.js';
 import { requireAuth } from './middleware.js';
 import { requireTenant } from '../tenant.js';
+import { featuresFor } from '../tenant-features.js';
 
 export const authRouter = express.Router();
 
@@ -119,7 +120,8 @@ authRouter.post('/logout', async (req, res, next) => {
 });
 
 // The SPA calls this on boot to learn who it is and to pick up the CSRF token.
-authRouter.get('/me', requireAuth, (req, res) => {
+authRouter.get('/me', requireAuth, async (req, res, next) => {
+  try {
   const staff = Boolean(req.session.impersonated_by);
   const preview = Boolean(req.session.preview_tenant_id);
   res.json({
@@ -136,6 +138,9 @@ authRouter.get('/me', requireAuth, (req, res) => {
       mainExtension: req.session.main_extension || null,
     },
     csrfToken: req.session.csrf_secret,
+    // What this customer's portal is set up to offer. The portal renders from
+    // this; the API enforces the same list independently.
+    features: await featuresFor(req.session.tenant_id),
     impersonation: staff
       ? {
           by: req.session.staff_email,
@@ -146,4 +151,5 @@ authRouter.get('/me', requireAuth, (req, res) => {
         }
       : null,
   });
+  } catch (err) { next(err); }
 });

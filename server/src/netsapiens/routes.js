@@ -6,6 +6,8 @@ import { nsRequest, NsError } from './client.js';
 import { telcoRequest } from '../telco/client.js';
 import { requireAuth, requireCsrf } from '../auth/middleware.js';
 import { actorFor } from '../admin/impersonate.js';
+import { operationAllowed } from '../tenant-features.js';
+import { featureForOperation } from '../features.js';
 import * as audit from '../audit.js';
 import { logger } from '../logger.js';
 
@@ -48,6 +50,26 @@ nsRouter.post('/:operation', writeLimiter, async (req, res, next) => {
   // is not an escalation. It is attributed to them, not to the customer.
   const actor = actorFor(s);
   const isStaff = actor.actorKind === 'staff';
+
+  // A customer only gets the parts of the portal they were given. This is the
+  // enforcement, not the UI: turning a feature off closes the API for it, so
+  // a hidden button is not the only thing standing in the way.
+  //
+  // It applies to support sessions too. An operator wanting more should turn
+  // the feature on for the customer, which is recorded, rather than reaching
+  // past their configuration from inside their portal.
+  if (!(await operationAllowed(s.tenant_id, name))) {
+    await audit.record({
+      ...actor,
+      tenantId: s.tenant_id, nsDomain: s.ns_domain,
+      op: name, result: 'denied', error: 'feature not enabled', ip: req.ip,
+    });
+    return res.status(403).json({
+      error: 'not_enabled',
+      message: 'That is not part of this portal. Ask your provider to turn it on.',
+      feature: featureForOperation(name),
+    });
+  }
 
   if (op.role === 'admin' && !isStaff && s.role !== 'admin') {
     await audit.record({

@@ -125,6 +125,44 @@ Three things hold, and are worth knowing before you rely on it:
 **Operators can see and change every customer.** Keep the list short, and
 disable leavers the same day — disabling kills their live sessions at once.
 
+### What each customer's portal offers
+
+Customers want different things, so a portal is assembled per customer in
+**Customers → Portal setup**. Anything switched off is refused by the server,
+not merely hidden, so a customer cannot reach it by other means.
+
+A new customer starts able to read their forwarding and see their history, and
+nothing else. Turning on anything that writes is a deliberate act.
+
+### The dispatch schedule
+
+The schedule is the feature most customers will actually want: they name the
+people and numbers calls can go to, paint who covers each hour of the week,
+and an engine applies the current hour to SkySwitch.
+
+It rewrites one answer rule on the `*` time frame as the hour turns, rather
+than creating a time frame per hour. Everything outside that rule is the
+customer's own business and is never touched.
+
+- Hours are in the **customer's** timezone (`tenants.timezone`), not the
+  server's. A schedule following the server clock would send calls to the
+  wrong person for most of the day.
+- An unpainted hour means "leave the phone system alone", so a customer can
+  schedule part of the week without the engine touching the rest.
+- The engine checks every minute and writes only when the destination has
+  actually changed. An hourly timer drifts and misses an hour entirely if the
+  process restarts across the boundary.
+- One customer's SkySwitch being unreachable never stops another customer's
+  schedule running. The failure is recorded on their portal and retried.
+- Every application is audited as `system`, so a customer can tell an
+  automatic change from one a person made.
+
+```sql
+-- what the engine last applied, and why it might not have
+SELECT t.name, s.applied_target, s.applied_at, s.last_error
+  FROM tenant_schedule_state s JOIN tenants t ON t.id = s.tenant_id;
+```
+
 ### The shared portal and per-customer addresses
 
 `SHARED_PORTAL_HOSTNAME` in `/etc/portal/portal.env` is one address any

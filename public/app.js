@@ -153,12 +153,26 @@
     state.csrf = state.me.csrfToken;
   }
 
+  function has(feature) {
+    return (state.me.features || []).indexOf(feature) !== -1;
+  }
+
   async function renderApp() {
     boot.hidden = true;
     root.hidden = false;
     var b = state.brand, me = state.me;
 
     renderSupportBar(me.impersonation);
+
+    // A portal is assembled from what this customer was given, so a customer
+    // with only the schedule sees only the schedule.
+    var tabs = [];
+    if (has('schedule')) tabs.push(['schedule', 'Schedule']);
+    if (has('forwarding_view')) tabs.push(['forwarding', 'Where calls go']);
+    if (has('history')) tabs.push(['history', 'Recent changes']);
+    if (!state.tab || !tabs.some(function (t) { return t[0] === state.tab; })) {
+      state.tab = tabs.length ? tabs[0][0] : null;
+    }
 
     root.innerHTML =
       '<div class="wrap">' +
@@ -171,6 +185,14 @@
           '<button class="btn-ghost btn-sm" id="signOut">Sign out</button>' +
         '</div>' +
 
+        (tabs.length > 1
+          ? '<div class="tabs" role="tablist">' + tabs.map(function (t) {
+              return '<button class="tab" role="tab" data-tab="' + t[0] + '" aria-selected="' +
+                     (state.tab === t[0]) + '">' + h(t[1]) + '</button>';
+            }).join('') + '</div>'
+          : '') +
+        '<div id="panel"></div>' +
+        '<div hidden>' +
         '<h1>Where your calls go</h1>' +
         '<p class="lede">These are the forwarding rules on your main line. ' +
           (me.impersonation
@@ -190,11 +212,50 @@
           '<div class="hist-scroll" id="history"><div class="empty">Loading…</div></div>' +
         '</div>' +
 
+        '</div>' +
         supportMarkup(b) +
       '</div>';
 
     document.getElementById('signOut').addEventListener('click', onSignOut);
+    root.querySelectorAll('.tab').forEach(function (btn) {
+      btn.addEventListener('click', function () { state.tab = btn.dataset.tab; renderApp(); });
+    });
+    renderPanel();
+  }
+
+  function panelError(host, err) {
+    var cls = err.code === 'upstream_failed' ? 'alert-warn' : 'alert-err';
+    host.innerHTML = '<div class="alert ' + cls + '">' + h(err.message) + '</div>';
+  }
+
+  function renderPanel() {
+    var host = document.getElementById('panel');
+    if (!host) return;
+    if (!state.tab) {
+      host.innerHTML = '<div class="empty">Your provider has not set this portal up yet.</div>';
+      return;
+    }
+    if (state.tab === 'schedule') return window.renderSchedule(host, api, panelError);
+    if (state.tab === 'forwarding') return renderForwarding(host);
+    if (state.tab === 'history') return renderHistory(host);
+  }
+
+  function renderForwarding(host) {
+    host.innerHTML =
+      '<h1>Where your calls go</h1>' +
+      '<p class="lede">These are the forwarding rules on your main line.</p>' +
+      '<div class="card"><h2>Forwarding rules</h2>' +
+        '<p class="desc">Each rule says where calls go during a particular time period.</p>' +
+        '<div id="rules"><div class="empty">Loading…</div></div></div>';
     loadRules();
+  }
+
+  function renderHistory(host) {
+    host.innerHTML =
+      '<h1>Recent changes</h1>' +
+      '<p class="lede">Everything done on your account, most recent first.</p>' +
+      '<div class="card"><div class="hist-scroll" id="history">' +
+        '<div class="empty">Loading…</div></div></div>';
     loadHistory();
   }
 
