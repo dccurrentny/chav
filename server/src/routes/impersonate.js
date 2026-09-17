@@ -13,7 +13,9 @@ export const impersonateRouter = express.Router();
 // redeemed on another's address.
 impersonateRouter.get('/__impersonate', requireTenant, async (req, res, next) => {
   try {
-    const grant = await redeemGrant(req.query.t, req.tenant.id);
+    // On the shared portal there is no hostname tenant to pin the grant to;
+    // the grant's own user supplies it.
+    const grant = await redeemGrant(req.query.t, req.sharedPortal ? null : req.tenant.id);
     if (!grant) {
       // One message for expired, already-used, wrong-tenant and forged alike.
       return res.status(400).type('html').send(
@@ -33,7 +35,7 @@ impersonateRouter.get('/__impersonate', requireTenant, async (req, res, next) =>
     });
 
     await audit.record({
-      tenantId: req.tenant.id, userId: grant.user_id,
+      tenantId: grant.tenant_id, userId: grant.user_id,
       actorKind: 'staff', staffId: grant.staff_id,
       // Name the operator, so the customer's own history says who looked.
       actorEmail: grant.staff_email,

@@ -1,6 +1,7 @@
 import express from 'express';
 import crypto from 'node:crypto';
 import { z } from 'zod';
+import { config } from '../config.js';
 import { query } from '../db.js';
 import { hashPassword } from '../auth/password.js';
 import { requireStaff, requireOwner, requireStaffCsrf } from './middleware.js';
@@ -363,10 +364,14 @@ adminRouter.post('/users/:id/impersonate', async (req, res, next) => {
         message: 'That account is disabled or its customer is suspended.',
       });
     }
-    if (!user.hostname) {
+    // A customer without their own address uses the shared portal, which is
+    // now the normal case rather than an error.
+    const host = user.hostname || config.SHARED_PORTAL_HOSTNAME;
+    if (!host) {
       return res.status(409).json({
         error: 'conflict',
-        message: 'That customer has no portal address yet, so there is nothing to view.',
+        message: 'There is nowhere to open this. Give the customer a portal address, ' +
+                 'or set SHARED_PORTAL_HOSTNAME so they can use the shared portal.',
       });
     }
 
@@ -378,7 +383,7 @@ adminRouter.post('/users/:id/impersonate', async (req, res, next) => {
     });
 
     res.json({
-      url: impersonationUrl(user.hostname, token),
+      url: impersonationUrl(host, token),
       email: user.email,
       tenant: user.tenant_name,
       minutes: IMPERSONATION_TTL_MINUTES,

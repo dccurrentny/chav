@@ -30,13 +30,15 @@ export async function createGrant({ userId, staffId, ip }) {
 }
 
 /**
- * Redeem a grant on the customer's own hostname.
+ * Redeem a grant.
  *
- * `tenantId` is the tenant that owns the hostname the request arrived on. The
- * grant's user must belong to it, so a grant minted for one customer cannot be
- * redeemed on another's address.
+ * `tenantId` is the tenant owning the hostname the request arrived on, so a
+ * grant minted for one customer cannot be redeemed on another's address. On
+ * the shared portal there is no such hostname, so it is null and the grant's
+ * own user decides the tenant — which is safe because the grant is
+ * single-use, expires in 60 seconds, and only an operator can mint one.
  */
-export async function redeemGrant(token, tenantId) {
+export async function redeemGrant(token, tenantId = null) {
   if (!token) return null;
 
   // Single-use: the UPDATE only matches while used_at is null, so a replayed
@@ -49,9 +51,11 @@ export async function redeemGrant(token, tenantId) {
         AND g.expires_at > now()
         AND EXISTS (
           SELECT 1 FROM users u
-           WHERE u.id = g.user_id AND u.tenant_id = $2 AND u.status = 'active'
+           WHERE u.id = g.user_id AND u.status = 'active'
+             AND ($2::uuid IS NULL OR u.tenant_id = $2)
         )
       RETURNING g.user_id, g.staff_id,
+                (SELECT tenant_id FROM users WHERE id = g.user_id) AS tenant_id,
                 (SELECT email FROM staff WHERE id = g.staff_id) AS staff_email`,
     [hashToken(token), tenantId],
   );
@@ -106,6 +110,8 @@ export function refuseImpersonatedOperation(req, res, opName) {
 }
 
 export function impersonationUrl(hostname, token) {
+  // hostname is the customer's own address, or the shared portal for a
+  // customer that does not have one.
   // Fixed path, fixed scheme. Never built from anything the client supplied.
   const scheme = config.NODE_ENV === 'production' ? 'https' : 'http';
   return `${scheme}://${hostname}/__impersonate?t=${encodeURIComponent(token)}`;

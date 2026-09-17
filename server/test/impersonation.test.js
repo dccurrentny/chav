@@ -64,3 +64,29 @@ test('the support URL is built from a fixed path and never a supplied target', (
   assert.ok(!url.includes('tok en'), 'token was not encoded');
   assert.equal(url.split('?').length, 2, 'more than one query separator');
 });
+
+test('a support view works for a customer with no address of their own', async () => {
+  // Regression: impersonation required tenants.hostname, which was correct
+  // when every customer had one. With the shared portal that is now the normal
+  // case, so "View as" was broken for exactly those customers.
+  const src = await import('node:fs/promises')
+    .then((fs) => fs.readFile(new URL('../src/admin/manage.js', import.meta.url), 'utf8'));
+
+  assert.match(src, /user\.hostname \|\| config\.SHARED_PORTAL_HOSTNAME/,
+    'impersonation does not fall back to the shared portal');
+  assert.ok(!/if \(!user\.hostname\) \{/.test(src),
+    'a missing hostname is still treated as an error');
+});
+
+test('a grant redeemed on the shared portal takes its tenant from the grant', async () => {
+  // There is no hostname tenant on the shared portal, so the grant's own user
+  // supplies it. Safe because the grant is single-use, 60 seconds, and only an
+  // operator can mint one.
+  const src = await import('node:fs/promises')
+    .then((fs) => fs.readFile(new URL('../src/routes/impersonate.js', import.meta.url), 'utf8'));
+
+  assert.match(src, /req\.sharedPortal \? null : req\.tenant\.id/,
+    'redemption still assumes a hostname tenant');
+  assert.match(src, /tenantId: grant\.tenant_id/,
+    'the audit row does not use the grant’s tenant');
+});
