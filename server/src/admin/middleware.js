@@ -1,4 +1,5 @@
 import { loadStaffSession, checkStaffCsrf, ADMIN_COOKIE } from './session.js';
+import { statusFor } from './mfa.js';
 import { config } from '../config.js';
 
 function readCookie(req, name) {
@@ -59,4 +60,30 @@ export function requireStaffCsrf(req, res, next) {
     return res.status(403).json({ error: 'bad_csrf', message: 'Your session expired. Reload and try again.' });
   }
   next();
+}
+
+/**
+ * An operator with no second factor can enrol, and do nothing else.
+ *
+ * Applied to the management routes rather than to sign-in, so the endpoints
+ * needed to GET here and to set an authenticator up stay reachable. Mounted
+ * after requireStaff, so req.staff exists.
+ *
+ * Fails CLOSED. If the check itself errors, the answer is no — an operator
+ * locked out by a database blip is recoverable, a console open to a password
+ * alone because a query failed is not.
+ */
+export async function requireSecondFactor(req, res, next) {
+  if (!config.ADMIN_REQUIRE_2FA) return next();
+  try {
+    const { enabled } = await statusFor(req.staff.staff_id);
+    if (enabled) return next();
+    res.status(403).json({
+      error: 'mfa_required',
+      message: 'Set up an authenticator app before using the console. '
+             + 'It reaches every customer, so a password on its own is not enough.',
+    });
+  } catch (err) {
+    next(err);
+  }
 }

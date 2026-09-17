@@ -6,6 +6,7 @@ import { query } from '../db.js';
 import { hashPassword } from '../auth/password.js';
 import { requireStaff, requireOwner, requireStaffCsrf } from './middleware.js';
 import { destroyAllStaffSessions } from './session.js';
+import * as mfa from './mfa.js';
 import { _clearTenantCache, isReservedHostname } from '../tenant.js';
 import { FEATURES, FEATURE_NAMES, withDependencies } from '../features.js';
 import { featuresFor, setFeatures, enableDefaults } from '../tenant-features.js';
@@ -628,9 +629,36 @@ adminRouter.post('/settings/:server/test', requireOwner, async (req, res, next) 
 
 adminRouter.get('/staff', requireOwner, async (_req, res, next) => {
   try {
+    // An owner needs to see who has not enrolled yet — an operator without a
+    // second factor is the weak account, and it is invisible otherwise.
     const { rows } = await query(
-      'SELECT id, email, name, role, status, last_login_at, created_at FROM staff ORDER BY created_at');
+      `SELECT id, email, name, role, status, last_login_at, created_at,
+              totp_confirmed_at IS NOT NULL AS two_factor
+         FROM staff ORDER BY created_at`);
     res.json({ staff: rows });
+  } catch (err) { next(err); }
+});
+
+// An operator who has lost their phone and their recovery codes. Only an owner
+// can do this, never to themselves — otherwise a stolen operator session could
+// strip its own second factor, which is the attack this whole feature exists
+// to stop. It clears their sessions too: whoever is holding one should not keep
+// it across a credential reset.
+adminRouter.post('/staff/:id/2fa/reset', requireOwner, async (req, res, next) => {
+  try {
+    if (req.params.id === req.staff.staff_id) {
+      return res.status(400).json({
+        error: 'invalid_input',
+        message: 'Use the two-factor settings on your own account, where a current code is required.',
+      });
+    }
+    const { rows } = await query('SELECT email FROM staff WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'not_found', message: 'No such operator.' });
+
+    await mfa.disableFor(req.params.id);
+    await destroyAllStaffSessions(req.params.id);
+    await log(req, { op: 'staff.2fa.reset', target: rows[0].email, result: 'ok' });
+    res.json({ ok: true });
   } catch (err) { next(err); }
 });
 

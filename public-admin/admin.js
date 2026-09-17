@@ -133,6 +133,9 @@
           email: document.getElementById('em').value.trim(),
           password: document.getElementById('pw').value,
         }});
+        // The password being right is not the same as being signed in. No
+        // cookie has been set at this point; the challenge token is all we hold.
+        if (out.mfaRequired) return renderMfa(out.mfaToken);
         state.csrf = out.csrfToken;
         state.me = await api('/me');
         renderApp();
@@ -142,13 +145,82 @@
     });
   }
 
+  /* ---------------------------------------------------- second factor */
+
+  function renderMfa(mfaToken, message, recovery) {
+    boot.hidden = true; root.hidden = false;
+    root.innerHTML =
+      '<div class="login-shell"><div class="login">' +
+        '<div class="login-head"><div class="mark">DC</div>' +
+          '<h1>Two-step sign-in</h1>' +
+          '<p>' + (recovery ? 'Enter one of your recovery codes'
+                            : 'Enter the code from your authenticator app') + '</p></div>' +
+        '<div class="card">' +
+          (message ? '<div class="alert alert-err">' + h(message) + '</div>' : '') +
+          '<form id="mf" novalidate>' +
+            (recovery
+              ? '<div class="field"><label for="rc">Recovery code</label>' +
+                  '<input id="rc" autocomplete="one-time-code" spellcheck="false" ' +
+                  'placeholder="XXXX-XXXX-XXXX-XXXX" required></div>'
+              : '<div class="field"><label for="cd">Six-digit code</label>' +
+                  '<input id="cd" inputmode="numeric" autocomplete="one-time-code" ' +
+                  'maxlength="7" class="code-input" placeholder="000000" required></div>') +
+            '<button class="btn" id="mb" type="submit" style="width:100%">Sign in</button>' +
+          '</form>' +
+          '<div class="mfa-alt">' +
+            '<button class="linkish" id="swap">' +
+              (recovery ? 'Use my authenticator app instead' : 'I do not have my phone') +
+            '</button>' +
+            '<button class="linkish" id="cancel">Start again</button>' +
+          '</div>' +
+        '</div>' +
+      '</div></div>';
+
+    var input = document.getElementById(recovery ? 'rc' : 'cd');
+    input.focus();
+
+    document.getElementById('swap').addEventListener('click', function () {
+      renderMfa(mfaToken, null, !recovery);
+    });
+    document.getElementById('cancel').addEventListener('click', function () { renderLogin(); });
+
+    document.getElementById('mf').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var btn = document.getElementById('mb');
+      btn.disabled = true; btn.textContent = 'Checking…';
+      var body = { mfaToken: mfaToken };
+      if (recovery) body.recoveryCode = input.value.trim();
+      else body.code = input.value.trim();
+      try {
+        var out = await api('/login/mfa', { method: 'POST', body: body });
+        state.csrf = out.csrfToken;
+        state.me = await api('/me');
+        if (out.usedRecoveryCode) state.usedRecoveryCode = true;
+        renderApp();
+      } catch (err) {
+        // An expired or spent challenge cannot be retried — send them back to
+        // the password rather than leaving them typing into a dead form.
+        if (err.code === 'no_challenge' || err.code === 'too_many_attempts') {
+          return renderLogin(err.message);
+        }
+        renderMfa(mfaToken, err.message, recovery);
+      }
+    });
+  }
+
   /* ---------------------------------------------------------------- app */
 
   function renderApp() {
     boot.hidden = true; root.hidden = false;
     var me = state.me;
+
+    // The server refuses every management endpoint until this is done, so
+    // showing the console shell would just be a screen full of 403s.
+    if (me.twoFactor && me.twoFactor.required && !me.twoFactor.enabled) return renderEnrol();
+
     var tabs = [['overview', 'Overview'], ['tenants', 'Customers'], ['audit', 'Activity']];
     if (me.role === 'owner') tabs.push(['staff', 'Operators'], ['system', 'System']);
+    tabs.push(['security', 'Security']);
 
     root.innerHTML =
       '<div class="wrap">' +
@@ -167,20 +239,192 @@
         '<div id="panel"></div>' +
       '</div>';
 
-    document.getElementById('out').addEventListener('click', async function () {
-      try { await api('/logout', { method: 'POST' }); } catch (_) {}
-      state.me = null; state.csrf = null;
-      renderLogin();
-    });
+    document.getElementById('out').addEventListener('click', signOut);
     root.querySelectorAll('.tab').forEach(function (b) {
       b.addEventListener('click', function () { state.tab = b.dataset.tab; renderApp(); });
     });
 
     ({ overview: panelOverview, tenants: panelTenants, audit: panelAudit,
-       staff: panelStaff, system: panelSystem })[state.tab]();
+       staff: panelStaff, system: panelSystem, security: panelSecurity })[state.tab]();
   }
 
   function panel() { return document.getElementById('panel'); }
+
+  /* --------------------------------------------------- two-factor setup */
+
+  // Grouped in fours. This gets typed into a phone by hand, and a 32-character
+  // run of base32 is where transcription errors come from.
+  function groups(secret) {
+    return String(secret).replace(/(.{4})/g, '$1 ').trim();
+  }
+
+  function setupBody(d) {
+    return '<ol class="steps">' +
+      '<li>Install an authenticator app if you do not have one — ' +
+        'Google Authenticator, 1Password, Authy, or anything that does TOTP.</li>' +
+      '<li>Add an account. On this phone you can just ' +
+        '<a href="' + h(d.uri) + '">tap here</a>; otherwise choose ' +
+        '"enter a setup key" and type:' +
+        '<div class="secret num">' + h(groups(d.secret)) + '</div></li>' +
+      '<li>Enter the six-digit code it shows, to prove it worked:' +
+        '<form id="cf" class="confirm-row">' +
+          '<input id="cc" inputmode="numeric" maxlength="7" class="code-input" ' +
+            'placeholder="000000" autocomplete="one-time-code" required>' +
+          '<button class="btn" id="cb" type="submit">Confirm</button>' +
+        '</form></li>' +
+    '</ol><div id="cerr"></div>';
+  }
+
+  function wireConfirm(host, onDone) {
+    host.querySelector('#cf').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var btn = host.querySelector('#cb');
+      btn.disabled = true; btn.textContent = 'Checking…';
+      try {
+        var out = await api('/2fa/confirm', { method: 'POST',
+          body: { code: host.querySelector('#cc').value.trim() } });
+        onDone(out.recoveryCodes);
+      } catch (err) {
+        host.querySelector('#cerr').innerHTML =
+          '<div class="alert alert-err">' + h(err.message) + '</div>';
+        btn.disabled = false; btn.textContent = 'Confirm';
+      }
+    });
+    host.querySelector('#cc').focus();
+  }
+
+  // Shown once, and never again — they are hashed the moment they are stored.
+  function recoveryBlock(codes) {
+    return '<div class="alert alert-ok"><b>Two-factor is on.</b> ' +
+        'Save these recovery codes somewhere that is not your phone. ' +
+        'Each one works once, and they are the only way back in if you lose it. ' +
+        '<b>They will not be shown again.</b></div>' +
+      '<div class="codes num">' + codes.map(h).join('<br>') + '</div>' +
+      '<div class="row-gap">' +
+        '<button class="btn-ghost" id="copyCodes">Copy</button>' +
+        '<button class="btn" id="doneCodes">I have saved them</button>' +
+      '</div>';
+  }
+
+  function wireRecovery(host, codes, onDone) {
+    host.querySelector('#copyCodes').addEventListener('click', function () {
+      var btn = host.querySelector('#copyCodes');
+      navigator.clipboard.writeText(codes.join('\n')).then(function () {
+        btn.textContent = 'Copied';
+      }, function () {
+        btn.textContent = 'Select and copy them by hand';
+      });
+    });
+    host.querySelector('#doneCodes').addEventListener('click', onDone);
+  }
+
+  // Full-screen, no console behind it: until this is done there is nothing to
+  // show, because the server refuses every management endpoint.
+  function renderEnrol() {
+    boot.hidden = true; root.hidden = false;
+    root.innerHTML =
+      '<div class="login-shell"><div class="login login-wide">' +
+        '<div class="login-head"><div class="mark">DC</div>' +
+          '<h1>Set up two-factor</h1>' +
+          '<p>This console can reach every customer. A password on its own is not enough.</p>' +
+        '</div>' +
+        '<div class="card" id="enrolCard"><div class="empty">Preparing…</div></div>' +
+        '<div class="row-gap" style="justify-content:center;margin-top:14px">' +
+          '<button class="linkish" id="enrolOut">Sign out</button>' +
+        '</div>' +
+      '</div></div>';
+
+    document.getElementById('enrolOut').addEventListener('click', signOut);
+
+    var card = document.getElementById('enrolCard');
+    api('/2fa/setup', { method: 'POST' }).then(function (d) {
+      card.innerHTML = setupBody(d);
+      wireConfirm(card, function (codes) {
+        card.innerHTML = recoveryBlock(codes);
+        wireRecovery(card, codes, async function () {
+          state.me = await api('/me');
+          state.tab = 'overview';
+          renderApp();
+        });
+      });
+    }, function (err) {
+      card.innerHTML = '<div class="alert alert-err">' + h(err.message) + '</div>';
+    });
+  }
+
+  /* -------------------------------------------------------- security tab */
+
+  async function panelSecurity() {
+    var host = panel();
+    host.innerHTML = '<div class="empty">Loading…</div>';
+    try {
+      var d = await api('/2fa');
+      host.innerHTML =
+        '<div class="card">' +
+          '<h2>Two-factor authentication</h2>' +
+          (d.enabled
+            ? '<p class="desc">On for <b>' + h(state.me.email) + '</b>. ' +
+                '<b>' + d.recoveryCodesLeft + '</b> unused recovery code' +
+                (d.recoveryCodesLeft === 1 ? '' : 's') + ' left.</p>' +
+              (d.recoveryCodesLeft === 0
+                ? '<div class="alert alert-warn">You have no recovery codes left. ' +
+                  'If you lose your phone, another owner will have to reset this for you. ' +
+                  'Turn two-factor off and set it up again to get a fresh set.</div>'
+                : '') +
+              '<div class="row-gap">' +
+                '<button class="btn-danger" id="off">Turn off</button>' +
+              '</div>'
+            : '<p class="desc">Not set up on this account.</p>' +
+              '<button class="btn" id="on">Set up an authenticator app</button>') +
+          '<div id="secErr"></div>' +
+        '</div>';
+
+      if (d.enabled) {
+        host.querySelector('#off').addEventListener('click', function () {
+          // Turning it off needs a current code: a stolen session cookie must
+          // not be enough to strip the thing protecting the account.
+          var code = prompt('Enter a current code from your authenticator app, ' +
+            'or a recovery code, to turn two-factor off:');
+          if (!code) return;
+          var body = /^[0-9\s]{6,8}$/.test(code) ? { code: code.trim() }
+                                                  : { recoveryCode: code.trim() };
+          api('/2fa/disable', { method: 'POST', body: body }).then(async function () {
+            state.me = await api('/me');
+            renderApp();
+          }, function (err) {
+            host.querySelector('#secErr').innerHTML =
+              '<div class="alert alert-err" style="margin-top:12px">' + h(err.message) + '</div>';
+          });
+        });
+      } else {
+        host.querySelector('#on').addEventListener('click', function () {
+          var card = host.querySelector('.card');
+          api('/2fa/setup', { method: 'POST' }).then(function (sd) {
+            card.innerHTML = '<h2>Set up two-factor</h2>' + setupBody(sd);
+            wireConfirm(card, function (codes) {
+              card.innerHTML = '<h2>Save your recovery codes</h2>' + recoveryBlock(codes);
+              wireRecovery(card, codes, async function () {
+                state.me = await api('/me');
+                panelSecurity();
+              });
+            });
+          }, function (err) {
+            host.querySelector('#secErr').innerHTML =
+              '<div class="alert alert-err" style="margin-top:12px">' + h(err.message) + '</div>';
+          });
+        });
+      }
+    } catch (err) {
+      host.innerHTML = '<div class="alert alert-err">' + h(err.message) + '</div>';
+    }
+  }
+
+  async function signOut() {
+    try { await api('/logout', { method: 'POST' }); } catch (_) {}
+    state.me = null; state.csrf = null;
+    renderLogin();
+  }
+
 
   /* ----------------------------------------------------------- overview */
 

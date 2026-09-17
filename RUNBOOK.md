@@ -329,6 +329,39 @@ systemctl status postgresql
 curl -s localhost:3000/readyz
 ```
 
+### An operator has lost their phone
+
+They sign in with a **recovery code** instead of the six-digit one — the link is
+on the code screen. Each works once; ten are issued at enrolment.
+
+Out of recovery codes too, another **owner** resets them:
+Operators → the person → *Reset two-factor*. That clears their authenticator and
+signs out every session they have. They set it up again on their next sign-in.
+
+If there is no other owner, and nobody can get in, that is the one case needing
+the database directly:
+
+```bash
+set -a; . /etc/portal/db.env; set +a
+psql "$DATABASE_URL" -c "UPDATE staff SET totp_secret_enc = NULL, \
+  totp_confirmed_at = NULL, totp_last_step = NULL WHERE email = 'you@dccurrentny.com'"
+```
+
+They are then back to password-only and must enrol again at the next sign-in —
+the console refuses everything else until they do.
+
+### Two-factor codes suddenly rejected for everyone
+
+**`SESSION_SECRET` was rotated.** Authenticator secrets are encrypted with a key
+derived from it, so rotating it makes every one of them undecryptable — the same
+trade-off as the stored SkySwitch credentials, and worth knowing before you
+rotate rather than after.
+
+Symptom: the code is right and the server says it is not, and the log has
+`could not decrypt a staff TOTP secret`. Fix: clear the secrets as above; every
+operator re-enrols. Recovery codes are hashed, not encrypted, so **those still
+work** and are the way back in.
+
 ### Disk full
 
 Most likely backups or logs.
@@ -448,13 +481,19 @@ Changing any of these needs a deliberate review, not a quick edit:
 7. **Staff are not users.** Operators live in their own table with their own
    sessions and their own cookie. Never give a `users` row cross-tenant power:
    the tenant boundary depends on every user having exactly one tenant.
-8. **The console answers on `ADMIN_HOSTNAME` and nowhere else.** The API 404s
+8. **The staff console requires a second factor.** `ADMIN_REQUIRE_2FA` defaults
+   to on, and `requireSecondFactor` gates every management endpoint — an
+   operator without one can reach the enrolment screen and nothing else. It
+   fails closed: if the check itself errors, the answer is no. Turning it off is
+   a decision to make deliberately and put back, not a way round a bad phone —
+   use an owner reset for that.
+9. **The console answers on `ADMIN_HOSTNAME` and nowhere else.** The API 404s
    admin endpoints on any other host and Caddy serves the admin bundle only
    from that block. Both checks matter — keep both.
-9. **The hostname decides the tenant, and login is scoped to it.** A user is
+10. **The hostname decides the tenant, and login is scoped to it.** A user is
    looked up by email *and* tenant, so one customer's credentials do nothing on
    another's portal. `requireAuth` additionally refuses a session whose tenant
    does not match the hostname — defence in depth behind host-only cookies.
-10. **`/internal/tls-check` must stay unreachable from outside.** Caddy calls it
+11. **`/internal/tls-check` must stay unreachable from outside.** Caddy calls it
    on loopback; the public site block returns 404 for `/internal/*`. Exposing it
    would let anyone enumerate customer hostnames.

@@ -57,6 +57,13 @@ const schema = z.object({
   // an installation that does not want one exposed.
   ADMIN_HOSTNAME: z.string().min(1).optional(),
 
+  // On by default. The console reaches every customer behind one password, so
+  // an operator without a second factor can see the enrolment screen and
+  // nothing else. Settable only so a recovery situation is not a redeploy —
+  // turning it off is a decision to be made deliberately and put back.
+  ADMIN_REQUIRE_2FA: z.enum(['true', 'false']).default('true')
+    .transform((v) => v === 'true'),
+
   // The shared customer portal: one address any customer can sign in to, where
   // the tenant comes from the account rather than the hostname. Customers who
   // want their own address still get one; this is the default door for the

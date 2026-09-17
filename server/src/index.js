@@ -16,8 +16,9 @@ import { startEngine } from './schedule/engine.js';
 import { resolveTenant, requireTenant } from './tenant.js';
 import { adminAuthRouter } from './admin/auth.js';
 import { adminRouter } from './admin/manage.js';
-import { attachStaffSession, requireAdminHost } from './admin/middleware.js';
+import { attachStaffSession, requireAdminHost, requireStaff, requireSecondFactor } from './admin/middleware.js';
 import { purgeExpiredStaffSessions } from './admin/session.js';
+import { purgeExpiredChallenges } from './admin/mfa.js';
 import { purgeExpired } from './auth/session.js';
 
 const app = express();
@@ -55,7 +56,7 @@ app.use(internalRouter);
 // The staff console answers on its own hostname only, and is mounted before
 // tenant resolution so an operator request is never treated as a customer one.
 app.use('/api/admin', requireAdminHost, attachStaffSession, adminAuthRouter);
-app.use('/api/admin', requireAdminHost, attachStaffSession, adminRouter);
+app.use('/api/admin', requireAdminHost, attachStaffSession, requireStaff, requireSecondFactor, adminRouter);
 
 // Everything below is scoped to the customer whose hostname was used.
 app.use(resolveTenant);
@@ -94,8 +95,9 @@ const server = app.listen(config.PORT, '127.0.0.1', () => {
 
 // Expired sessions accumulate forever otherwise.
 const purgeTimer = setInterval(() => {
-  Promise.all([purgeExpired(), purgeExpiredStaffSessions()])
-    .then(([a, b]) => (a + b) > 0 && logger.info({ purged: a + b }, 'purged expired sessions'))
+  Promise.all([purgeExpired(), purgeExpiredStaffSessions(), purgeExpiredChallenges()])
+    .then((n) => n.reduce((x, y) => x + y, 0) > 0
+      && logger.info({ purged: n.reduce((x, y) => x + y, 0) }, 'purged expired sessions'))
     .catch((err) => logger.error({ err }, 'session purge failed'));
 }, 60 * 60 * 1000);
 purgeTimer.unref();
