@@ -389,7 +389,11 @@ Merging to `main` triggers `.github/workflows/deploy.yml`, which runs tests,
 pushes to the droplet over SSH, migrates, restarts, and **rolls back
 automatically** if `/readyz` does not come up within 30 seconds.
 
-**This pipeline is not live yet.** It needs three things that do not exist:
+**This pipeline is not live yet**, and as written it would break the droplet:
+it does `git reset --hard origin/main`, and `main` does not contain the portal.
+That has to be fixed — by merging the portal to `main`, which is the right
+answer — before the workflow is ever enabled. It also needs three things that
+do not exist:
 a `deploy` user on the droplet with sudo rights for `systemctl restart portal`,
 the `DEPLOY_HOST` and `DEPLOY_SSH_KEY` repository secrets, and `deploy.yml`
 merged to `main`. Its migrate step also has the `DATABASE_URL` gap described
@@ -399,8 +403,17 @@ Until all of that is done, every deploy is the manual one below.
 
 Manual deploy, if CI is unavailable:
 
+**The droplet does not track `main`.** `main` holds an `index.html` left over
+from what this repository used to be; the portal has only ever lived on its
+feature branch, and `/opt/chav` is checked out to that. Resetting to `main`
+empties the checkout and takes the service down with it. Set BRANCH to whatever
+`git -C /opt/chav rev-parse --abbrev-ref HEAD` reports before running this, and
+fix it properly by merging the portal to `main`.
+
 ```bash
-cd /opt/chav && git fetch origin main && git reset --hard origin/main
+BRANCH=claude/web-page-artifact-4qqy2g
+
+cd /opt/chav && git fetch origin "$BRANCH" && git reset --hard "origin/$BRANCH"
 cd server && npm ci --omit=dev
 
 # migrate.js reads DATABASE_URL from the environment and nothing else. It is
