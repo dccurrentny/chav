@@ -422,31 +422,65 @@ Merging to `main` triggers `.github/workflows/deploy.yml`, which runs tests,
 pushes to the droplet over SSH, migrates, restarts, and **rolls back
 automatically** if `/readyz` does not come up within 30 seconds.
 
-**This pipeline is not live yet**, and as written it would break the droplet:
-it does `git reset --hard origin/main`, and `main` does not contain the portal.
-That has to be fixed — by merging the portal to `main`, which is the right
-answer — before the workflow is ever enabled. It also needs three things that
-do not exist:
-a `deploy` user on the droplet with sudo rights for `systemctl restart portal`,
-the `DEPLOY_HOST` and `DEPLOY_SSH_KEY` repository secrets, and `deploy.yml`
-merged to `main`. Its migrate step also has the `DATABASE_URL` gap described
-below and needs the same fix once the deploy user exists — which sudo policy
-that user gets is the open question, so it is deliberately not guessed at here.
-Until all of that is done, every deploy is the manual one below.
+### Turning it on
+
+`provision.sh` creates everything the droplet side needs. Two things it cannot
+do for you — the key and the secrets:
+
+1. **Make a deploy key** (on your own machine, not the droplet). No passphrase:
+   CI cannot type one.
+
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.ssh/chav-deploy -C "github actions deploy" -N ""
+   ```
+
+2. **Install the public half** on the droplet, as root:
+
+   ```bash
+   DEPLOY_PUBKEY="$(cat ~/.ssh/chav-deploy.pub)" bash /opt/chav/infra/provision.sh
+   ```
+
+   Re-running provision is the supported way to do this; it appends the key only
+   if absent, so running it twice does not duplicate anything.
+
+3. **Add two repository secrets** at Settings → Secrets and variables → Actions:
+
+   | Secret | Value |
+   |---|---|
+   | `DEPLOY_HOST` | the droplet's IP |
+   | `DEPLOY_SSH_KEY` | the whole of `~/.ssh/chav-deploy` — the **private** half, `BEGIN`/`END` lines included |
+
+4. **Try it without a push:** Actions → *Deploy portal* → *Run workflow*. It is
+   `workflow_dispatch` as well as `push`, so a first run can be watched
+   deliberately rather than discovered.
+
+The deploy user is key-only, has no password, and has exactly three sudo
+entries: `portal-migrate`, `systemctl restart portal`, `systemctl is-active
+portal`. It is not the service account — the portal should not be able to
+rewrite its own code.
+
+**If a deploy fails it rolls itself back** to the previous revision and exits
+non-zero. That covers a failed fetch, a failed `npm ci`, a failed migration, and
+a portal that does not answer `/readyz` within 30 seconds. A rolled-back deploy
+leaves the droplet running the code it was running before, so the fix is to
+correct the branch and merge again, not to touch the droplet.
+
+> A rollback restores the **code**, not the **database**. A migration that
+> applied before a later step failed stays applied. Migrations here are additive
+> and idempotent, which is what makes that safe — keep them that way.
 
 Manual deploy, if CI is unavailable:
 
-**The droplet does not track `main`.** `main` holds an `index.html` left over
-from what this repository used to be; the portal has only ever lived on its
-feature branch, and `/opt/chav` is checked out to that. Resetting to `main`
-empties the checkout and takes the service down with it. Set BRANCH to whatever
-`git -C /opt/chav rev-parse --abbrev-ref HEAD` reports before running this, and
-fix it properly by merging the portal to `main`.
+Check what the droplet is actually tracking first — it is `main` now that the
+portal is merged, but it tracked a feature branch before that, and resetting to
+the wrong one empties the checkout and takes the service down:
 
 ```bash
-BRANCH=claude/web-page-artifact-4qqy2g
+git -C /opt/chav rev-parse --abbrev-ref HEAD    # expect: main
+```
 
-cd /opt/chav && git fetch origin "$BRANCH" && git reset --hard "origin/$BRANCH"
+```bash
+cd /opt/chav && git fetch origin main && git reset --hard origin/main
 cd server && npm ci --omit=dev
 
 # migrate.js reads DATABASE_URL from the environment and nothing else. It is

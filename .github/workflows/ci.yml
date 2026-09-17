@@ -28,7 +28,7 @@ jobs:
       - name: Shell-check infra scripts
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck infra/provision.sh infra/backup.sh
+          shellcheck infra/provision.sh infra/backup.sh infra/portal-migrate
 
       - name: Verify no secrets are committed
         run: |
