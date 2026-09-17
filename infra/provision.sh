@@ -164,6 +164,12 @@ chown -R "$DEPLOY_USER":"$APP_USER" "$APP_DIR"
 # that distinction.
 chmod -R a+rX "$APP_DIR"
 
+# Root administers this box and will run git in here by hand. Git refuses to
+# operate on a repository owned by someone else — the "dubious ownership" error
+# this setup has already hit once — so declare it safe for root, once.
+git config --global --get-all safe.directory 2>/dev/null | grep -qx "$APP_DIR" || \
+  git config --global --add safe.directory "$APP_DIR"
+
 log "systemd unit"
 cp "${APP_DIR}/infra/systemd/portal.service" /etc/systemd/system/portal.service
 systemctl daemon-reload
